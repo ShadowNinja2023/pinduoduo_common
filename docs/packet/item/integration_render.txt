@@ -1,0 +1,8 @@
+这里是获取商品详情的接口，业务上主要传入itemId,其余直接构造
+
+req_url=https://api.pinduoduo.com/api/oak/integration/render
+req_headers={ETag=vNp2nq8p, AccessToken=HWXZTXHDPXW2KYBHLZHQN67OHACEZHNQSBQGODHPX3LB5CQPHDQA1213903, Referer=Android, Content-Type=application/json;charset=UTF-8}
+req_body={"address_list":[],"page_sn":"10014","page_id":"10014_1774196150066_1901484493","goods_id":"923425411993","phone_model":"MNA-AL00","page_from":"35","page_version":"7","client_time":"1774196150067","refer_page_sn":"10002","refer_page_el_sn":"99862","pic_w":0,"pic_h":0,"has_pic_url":1,"extend_map":{},"_oak_rcto":"YWLpBP4VFNOkOqUL-oB77KVVU6L4mARoPQv3iSrTsNPiwkpWPATdpwm2","union_pay_installed":true,"client_lab":{"mall_h5_url_preload_enable":"1"},"is_sys_minor":0,"system_language":"zh","impr_tips":[],"screen_height":794,"screen_width":375,"goods_detail_support_zoom":"true","pdd_goods_detail_dark_color_enable":true}
+
+resp_url=https://api.pinduoduo.com/api/oak/integration/render?pdduid=9649784313145
+resp_body={"server_time":1774196150,"destination_url":"order_checkout.html","destination_type":2,....

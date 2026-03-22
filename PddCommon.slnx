@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Lib/PddLib.csproj" />
+  <Project Path="TestConcole/TestConcole.csproj" />
+</Solution>
