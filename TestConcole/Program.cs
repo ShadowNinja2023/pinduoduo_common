@@ -1,6 +1,6 @@
 ﻿using PddLib;
 
-var api = new BackendApi("https://open-cdn.reverse-studio.com", "1c3e2c5fffc33302aac888c8d88bcbf8");
+var api = new BackendApi("https://open-cdn.reverse-studio.com", "6d7f7522805a24f06f7534f1ecb306a7");
 var result = await api.GetDeviceAsync();
 var session = result.Results!.ParseSession();
 var device = result.Results.ParseDevice();

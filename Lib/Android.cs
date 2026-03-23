@@ -53,7 +53,8 @@ namespace PddLib
             {
                 ["goods_id"] = goodsId,
                 ["page_sn"] = "10014",
-                ["page_id"] = $"10014_{now}_1901484493",
+                //page_id实际jadx看到是随机构造  "_" + TimeStamp.getRealLocalTime().longValue() + "_" + String.format(Locale.US, "%010d", Integer.valueOf(RandomUtils.getInstance().nextInt(Integer.MAX_VALUE)));
+                ["page_id"] = $"10014_{now}_0{Random.Shared.NextInt64(100000000, 900000000)}",
                 ["page_from"] = "35",
                 ["page_version"] = "7",
                 ["client_time"] = now.ToString(),
@@ -83,7 +84,8 @@ namespace PddLib
 
             var headers = BuildHeaders(new Dictionary<string, string>
             {
-                ["ETag"] = "vNp2nq8p",
+                //ETag其实是服务器下发id，可能需要放空或者改包时候抓取
+                ["ETag"] = "",
             });
 
             return await Http.PostAsync(url, body, headers);
