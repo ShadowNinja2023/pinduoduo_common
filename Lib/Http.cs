@@ -37,12 +37,47 @@ namespace PddLib
             if (string.IsNullOrEmpty(proxyUrl))
                 return new HttpClient();
 
+            var proxy = CreateWebProxy(proxyUrl);
             var handler = new HttpClientHandler
             {
-                Proxy = new WebProxy(proxyUrl),
-                UseProxy = true
+                Proxy = proxy,
+                UseProxy = true,
+                UseDefaultCredentials = false,
+                PreAuthenticate = true
             };
             return new HttpClient(handler);
+        }
+
+        /// <summary>
+        /// 创建 WebProxy，正确处理带认证信息的代理 URL
+        /// </summary>
+        private static WebProxy CreateWebProxy(string proxyUrl)
+        {
+            var uri = new Uri(proxyUrl);
+            
+            // 构建不带认证信息的代理地址
+            var proxyAddress = new Uri($"{uri.Scheme}://{uri.Host}:{uri.Port}");
+            var proxy = new WebProxy(proxyAddress);
+
+            // 如果 URL 包含用户名和密码
+            if (!string.IsNullOrEmpty(uri.UserInfo))
+            {
+                var userInfo = uri.UserInfo;
+                var colonIndex = userInfo.IndexOf(':');
+                if (colonIndex > 0)
+                {
+                    // URL 解码用户名和密码
+                    var username = Uri.UnescapeDataString(userInfo.Substring(0, colonIndex));
+                    var password = Uri.UnescapeDataString(userInfo.Substring(colonIndex + 1));
+                    proxy.Credentials = new NetworkCredential(username, password);
+                }
+                else
+                {
+                    proxy.Credentials = new NetworkCredential(Uri.UnescapeDataString(userInfo), string.Empty);
+                }
+            }
+
+            return proxy;
         }
 
         /// <summary>
