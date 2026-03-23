@@ -20,24 +20,40 @@ namespace PddLib
     public class Http
     {
         private HttpClient _client;
+        private string? _proxyUrl;
+        private string? _proxyUsername;
+        private string? _proxyPassword;
 
-        public Http(string? proxyUrl = null)
+        public Http(string? proxyUrl = null, string? proxyUsername = null, string? proxyPassword = null)
         {
-            _client = CreateClient(proxyUrl);
+            _proxyUrl = proxyUrl;
+            _proxyUsername = proxyUsername;
+            _proxyPassword = proxyPassword;
+            _client = CreateClient(proxyUrl, proxyUsername, proxyPassword);
         }
 
-        public void SetProxy(string? proxyUrl)
+        public void SetProxy(string? proxyUrl, string? proxyUsername = null, string? proxyPassword = null)
         {
             _client.Dispose();
-            _client = CreateClient(proxyUrl);
+            _proxyUrl = proxyUrl;
+            _proxyUsername = proxyUsername;
+            _proxyPassword = proxyPassword;
+            _client = CreateClient(proxyUrl, proxyUsername, proxyPassword);
         }
 
-        private static HttpClient CreateClient(string? proxyUrl)
+        private static HttpClient CreateClient(string? proxyUrl, string? proxyUsername = null, string? proxyPassword = null)
         {
             if (string.IsNullOrEmpty(proxyUrl))
                 return new HttpClient();
 
-            var proxy = CreateWebProxy(proxyUrl);
+            var proxy = new WebProxy(proxyUrl);
+            
+            // 如果提供了账号密码
+            if (!string.IsNullOrEmpty(proxyUsername))
+            {
+                proxy.Credentials = new NetworkCredential(proxyUsername, proxyPassword ?? string.Empty);
+            }
+
             var handler = new HttpClientHandler
             {
                 Proxy = proxy,
@@ -46,38 +62,6 @@ namespace PddLib
                 PreAuthenticate = true
             };
             return new HttpClient(handler);
-        }
-
-        /// <summary>
-        /// 创建 WebProxy，正确处理带认证信息的代理 URL
-        /// </summary>
-        private static WebProxy CreateWebProxy(string proxyUrl)
-        {
-            var uri = new Uri(proxyUrl);
-            
-            // 构建不带认证信息的代理地址
-            var proxyAddress = new Uri($"{uri.Scheme}://{uri.Host}:{uri.Port}");
-            var proxy = new WebProxy(proxyAddress);
-
-            // 如果 URL 包含用户名和密码
-            if (!string.IsNullOrEmpty(uri.UserInfo))
-            {
-                var userInfo = uri.UserInfo;
-                var colonIndex = userInfo.IndexOf(':');
-                if (colonIndex > 0)
-                {
-                    // URL 解码用户名和密码
-                    var username = Uri.UnescapeDataString(userInfo.Substring(0, colonIndex));
-                    var password = Uri.UnescapeDataString(userInfo.Substring(colonIndex + 1));
-                    proxy.Credentials = new NetworkCredential(username, password);
-                }
-                else
-                {
-                    proxy.Credentials = new NetworkCredential(Uri.UnescapeDataString(userInfo), string.Empty);
-                }
-            }
-
-            return proxy;
         }
 
         /// <summary>

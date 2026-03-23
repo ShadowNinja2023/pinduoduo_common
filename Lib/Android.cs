@@ -14,11 +14,11 @@ namespace PddLib
 
         private const string ApiBase = "https://api.pinduoduo.com";
 
-        public Android(Session session, Device device, string? proxyUrl = null)
+        public Android(Session session, Device device, string? proxyUrl = null, string? proxyUsername = null, string? proxyPassword = null)
         {
             Session = session;
             Device = device;
-            Http = new Http(proxyUrl);
+            Http = new Http(proxyUrl, proxyUsername, proxyPassword);
         }
 
         /// <summary>
