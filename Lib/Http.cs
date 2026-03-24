@@ -91,7 +91,7 @@ namespace PddLib
             }
 
             var response = await _client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
+            //response.EnsureSuccessStatusCode();
 
             return new HttpResult
             {
