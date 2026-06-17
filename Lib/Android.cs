@@ -13,6 +13,7 @@ namespace PddLib
         public Http Http { get; }
 
         private const string ApiBase = "https://api.pinduoduo.com";
+        private const string AppVersion = "7.99.0";
 
         public Android(Session session, Device device, string? proxyUrl = null, string? proxyUsername = null, string? proxyPassword = null)
         {
@@ -22,39 +23,86 @@ namespace PddLib
         }
 
         /// <summary>
-        /// 构建业务公共请求头
+        /// 解析 pixels "2288*1080" => (height, width)
         /// </summary>
-        private Dictionary<string, string> BuildHeaders(Dictionary<string, string>? extra = null)
+        private (int height, int width) ParsePixels()
         {
+            var parts = Device.Pixels?.Split('*');
+            if (parts?.Length == 2
+                && int.TryParse(parts[0], out var h)
+                && int.TryParse(parts[1], out var w))
+                return (h, w);
+            return (2400, 1080);
+        }
+
+        /// <summary>
+        /// 构建业务公共请求头（对齐实际抓包）
+        /// </summary>
+        private Dictionary<string, string> BuildHeaders(Dictionary<string, string>? extra = null, bool useInfo4 = false)
+        {
+            var (height, width) = ParsePixels();
+            var osv = Device.DeviceInfo?.VersionRelease ?? "14";
+            var build = Device.DeviceInfo?.Build;
+            var fingerprint = build?.Fingerprint ?? "";
+
+            // user-agent: android Mozilla/5.0 (Linux; Android {osv}; {model} Build/{buildId}; wv) ...
+            var ua = $"android Mozilla/5.0 (Linux; Android {osv}; {Device.Model} Build/{build?.Id ?? "TP1A.220624.014"}; wv) " +
+                     $"AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/143.0.7499.192 Safari/537.36 " +
+                     $" phh_android_version/{AppVersion} phh_android_build/{Session.Acid}" +
+                     $" phh_android_channel/main_guanwang pversion/0";
+
+            // x-pdd-queries: width={w}&height={h}&net=1&brand={brand}&model={model}&osv={osv}&appv={appv}&pl=2
+            var queries = $"width={width}&height={height}&net=1&brand={Device.Brand}&model={Device.Model}&osv={osv}&appv={AppVersion}&pl=2";
+
             var headers = new Dictionary<string, string>
             {
-                ["AccessToken"] = Session.AccessToken,
-                ["Referer"] = "Android",
-                ["Content-Type"] = "application/json;charset=UTF-8",
+                ["accesstoken"] = Session.AccessToken,
+                ["etag"] = "", //服务器下发，先放空
+                ["referer"] = "Android",
+                ["content-type"] = "application/json;charset=UTF-8",
+                ["user-agent"] = ua,
+                ["accept-encoding"] = "gzip",
+                ["accept-language"] = "zh-Hans-CN",
+                ["p-appname"] = "pinduoduo",
+                ["p-mediainfo"] = "player=1.0.3&rtc=1.0.0",
+                ["p-proc"] = "main",
+                ["x-app-lang"] = "zh",
+                ["x-pdd-queries"] = queries,
+                ["pdd-config"] = "V4:001.079900",
+                ["multi-set"] = "1,1,100000824",
+                ["x-app-ui"] = "dm=0&zm=0",
+                ["x-pdd-info"] = "bold_free=false&bold_product=&front=1&tz=Asia/Shanghai",
             };
+
             if (extra != null)
             {
                 foreach (var kv in extra)
                     headers[kv.Key] = kv.Value;
             }
+
+            if (useInfo4)
+            {
+                headers["anti-token"] = Crypto.Info4Codec.Encrypt(Crypto.Info4Codec.BuildPlaintext(Device.Imei[..16], DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), "",Guid.Parse(Device.Imei)));
+            }
+
             return headers;
         }
 
         /// <summary>
-        /// 获取商品详情 (integration/render)
+        /// 获取商品详情 (integration/render)，返回完整 HTTP 结果
         /// </summary>
-        /// <param name="goodsId">商品ID</param>
-        public async Task<string> GetItemDetailAsync(string goodsId)
+        public async Task<HttpResult> GetItemDetailFullAsync(string goodsId)
         {
             var url = $"{ApiBase}/api/oak/integration/render";
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            Device.Brand = "";
+            Device.Model = "MNA-AL00";
 
             var body = new Dictionary<string, object>
             {
                 ["goods_id"] = goodsId,
                 ["page_sn"] = "10014",
-                //page_id实际jadx看到是随机构造  "_" + TimeStamp.getRealLocalTime().longValue() + "_" + String.format(Locale.US, "%010d", Integer.valueOf(RandomUtils.getInstance().nextInt(Integer.MAX_VALUE)));
-                ["page_id"] = $"10014_{now}_0{Random.Shared.NextInt64(100000000, 900000000)}",
+                ["page_id"] = $"10014_{now}_{Random.Shared.NextInt64(1000000000, 9000000000)}",
                 ["page_from"] = "35",
                 ["page_version"] = "7",
                 ["client_time"] = now.ToString(),
@@ -66,7 +114,6 @@ namespace PddLib
                 ["has_pic_url"] = 1,
                 ["address_list"] = Array.Empty<object>(),
                 ["extend_map"] = new Dictionary<string, object>(),
-                // _oak_rcto 由 H5 JS Bridge 生成，纯 HTTP 模拟传空即可
                 ["_oak_rcto"] = "",
                 ["union_pay_installed"] = true,
                 ["client_lab"] = new Dictionary<string, string>
@@ -76,19 +123,22 @@ namespace PddLib
                 ["is_sys_minor"] = 0,
                 ["system_language"] = "zh",
                 ["impr_tips"] = Array.Empty<object>(),
-                ["screen_height"] = 794,
-                ["screen_width"] = 375,
+                ["screen_height"] = ParsePixels().height,
+                ["screen_width"] = ParsePixels().width,
                 ["goods_detail_support_zoom"] = "true",
                 ["pdd_goods_detail_dark_color_enable"] = true,
             };
 
-            var headers = BuildHeaders(new Dictionary<string, string>
-            {
-                //ETag其实是服务器下发id，可能需要放空或者改包时候抓取
-                ["ETag"] = "",
-            });
+            return await Http.PostFullAsync(url, body, BuildHeaders(useInfo4:true));
+        }
 
-            return await Http.PostAsync(url, body, headers);
+        /// <summary>
+        /// 获取商品详情，仅返回 body 字符串
+        /// </summary>
+        public async Task<string> GetItemDetailAsync(string goodsId)
+        {
+            var result = await GetItemDetailFullAsync(goodsId);
+            return result.Body;
         }
     }
 }

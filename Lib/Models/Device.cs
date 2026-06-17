@@ -24,6 +24,9 @@ namespace PddLib.Models
 
         [JsonPropertyName("deviceInfo")]
         public DeviceInfo? DeviceInfo { get; set; }
+
+        [JsonPropertyName("serverId")]
+        public string? ServerId { get; set; } = Utils.GetRandomChars(8);
     }
 
     /// <summary>

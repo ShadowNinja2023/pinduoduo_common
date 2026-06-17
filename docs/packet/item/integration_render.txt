@@ -6,3 +6,32 @@ req_body={"address_list":[],"page_sn":"10014","page_id":"10014_1774196150066_190
 
 resp_url=https://api.pinduoduo.com/api/oak/integration/render?pdduid=9649784313145
 resp_body={"server_time":1774196150,"destination_url":"order_checkout.html","destination_type":2,....
+
+
+实际抓包完整header
+
+
+:method: POST
+:scheme: https
+:authority: api-shb1.pinduoduo.com
+:path: /api/oak/integration/render?pdduid=
+accept-encoding: gzip
+accept-language: zh-Hans-CN
+anti-token: 2aguBl0gwILK5ccVx401ygI38OeoVxNd89P0q6Jy9CN/5hsz/I5J4m/ZfAyD6ogS9F5
+content-length: 788
+content-type: application/json;charset=UTF-8
+cookie: api_uid=CkzMf2nBvxG/mQEqDRTpAg==
+etag: WqfIGg5r
+multi-set: 1,1,100000824
+p-appname: pinduoduo
+p-mediainfo: player=1.0.3&rtc=1.0.0
+p-proc: main
+p-proc-time: 2257979
+pdd-config: V4:001.079900
+referer: Android
+user-agent: android Mozilla/5.0 (Linux; Android 15; TB322FC Build/AQ3A.250129.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/143.0.7499.192 Safari/537.36  phh_android_version/7.99.0 phh_android_build/a8b68ab34ad493a824c92d5baad227c6f1f4578f phh_android_channel/main_guanwang pversion/0
+x-app-lang: zh
+x-app-ui: dm%3D0%26zm%3D0
+x-b3-ptracer: hctruea977f63546a54f15ae5095d6ac
+x-pdd-info: bold_free%3Dfalse%26bold_product%3D%26front%3D1%26tz%3DAsia%2FShanghai
+x-pdd-queries: width=1519&height=1871&dpr=2.75&net=1&brand=Lenovo&model=TB322FC&osv=15&appv=7.99.0&pl=2

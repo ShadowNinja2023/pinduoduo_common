@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lib\PddLib.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="sample_02_plaintext.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="sample_03_inner_clean.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="sample_04_plaintext.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="sample_05_plaintext.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

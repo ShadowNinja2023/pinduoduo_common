@@ -1,4 +1,7 @@
 <Solution>
   <Project Path="Lib/PddLib.csproj" />
   <Project Path="TestConcole/TestConcole.csproj" />
+  <Project Path="CodecTests/CodecTests.csproj" />
+  <Project Path="MockCompare/MockCompare.csproj" />
+  <Project Path="SendTest/SendTest.csproj" />
 </Solution>

@@ -43,25 +43,26 @@ namespace PddLib
 
         private static HttpClient CreateClient(string? proxyUrl, string? proxyUsername = null, string? proxyPassword = null)
         {
-            if (string.IsNullOrEmpty(proxyUrl))
-                return new HttpClient();
-
-            var proxy = new WebProxy(proxyUrl);
-            
-            // 如果提供了账号密码
-            if (!string.IsNullOrEmpty(proxyUsername))
-            {
-                proxy.Credentials = new NetworkCredential(proxyUsername, proxyPassword ?? string.Empty);
-            }
-
             var handler = new HttpClientHandler
             {
-                Proxy = proxy,
-                UseProxy = true,
-                UseDefaultCredentials = false,
-                PreAuthenticate = true
+                AutomaticDecompression = System.Net.DecompressionMethods.All
             };
-            return new HttpClient(handler);
+
+            if (!string.IsNullOrEmpty(proxyUrl))
+            {
+                var proxy = new WebProxy(proxyUrl);
+                if (!string.IsNullOrEmpty(proxyUsername))
+                    proxy.Credentials = new NetworkCredential(proxyUsername, proxyPassword ?? string.Empty);
+
+                handler.Proxy = proxy;
+                handler.UseProxy = true;
+            }
+
+            return new HttpClient(handler)
+            {
+                DefaultRequestVersion = new Version(2, 0),
+                DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
+            };
         }
 
         /// <summary>
@@ -91,11 +92,11 @@ namespace PddLib
             }
 
             var response = await _client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
+            var responseBody = await response.Content.ReadAsStringAsync();
 
             return new HttpResult
             {
-                Body = await response.Content.ReadAsStringAsync(),
+                Body = responseBody,
                 Headers = response.Headers,
                 StatusCode = response.StatusCode
             };
