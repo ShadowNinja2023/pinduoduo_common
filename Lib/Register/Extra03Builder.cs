@@ -26,7 +26,9 @@ namespace PddLib.Register
         // ==================== 内层 (s_f_d) ====================
 
         /// <summary>
-        /// 构造内层检测明文 JSON (24 字段, UTF-8)。
+        /// 构造内层检测明文 JSON (23 字段干净基线, UTF-8)。
+        /// 已按 docs 16 §6 去 frida 污染: rootInfo seg0=-1/seg2=(null)、pts 空、
+        /// 无 oem_unlock_supported、emulator_detect 去 5/13。
         /// </summary>
         /// <param name="d">设备指纹 (model_sys_fingerprint = d.Fingerprint; adb_* 联动 d.AdbEnabled)</param>
         /// <param name="randB64">rand 字段值; null 则随机生成 (容器头 + arc4random 等价随机)</param>
@@ -52,7 +54,7 @@ namespace PddLib.Register
             S("rand", rand);
             S("adb_status", adbStatus);
             S("sys_usb_config", sysUsb);
-            S("oem_unlock_supported", Extra03Baseline.OemUnlockSupported);
+            // ★ oem_unlock_supported: 干净环境不发此字段 (docs 16 §1.3/§6); frida 环境才多出 → 移除
             S("oem_unlock_status", Extra03Baseline.OemUnlockStatus);
             S("verified_boot_state", Extra03Baseline.VerifiedBootState);
             S("model_sys_fingerprint", d.Fingerprint);

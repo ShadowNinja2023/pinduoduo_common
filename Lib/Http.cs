@@ -23,13 +23,21 @@ namespace PddLib
         private string? _proxyUrl;
         private string? _proxyUsername;
         private string? _proxyPassword;
+        public HttpClientHandler handler;
 
-        public Http(string? proxyUrl = null, string? proxyUsername = null, string? proxyPassword = null)
+        /// <summary>共享 cookie 容器 (可由外部传入, 与注册客户端共用以自动管理 api_uid 等)。</summary>
+        public CookieContainer Cookies { get; }
+
+        public Http(string? proxyUrl = null, string? proxyUsername = null, string? proxyPassword = null,
+            CookieContainer? cookieContainer = null)
         {
             _proxyUrl = proxyUrl;
             _proxyUsername = proxyUsername;
             _proxyPassword = proxyPassword;
-            _client = CreateClient(proxyUrl, proxyUsername, proxyPassword);
+            Cookies = cookieContainer ?? new CookieContainer();
+            var created = CreateClient(proxyUrl, proxyUsername, proxyPassword, Cookies);
+            _client = created.client;
+            handler = created.handler;
         }
 
         public void SetProxy(string? proxyUrl, string? proxyUsername = null, string? proxyPassword = null)
@@ -38,14 +46,19 @@ namespace PddLib
             _proxyUrl = proxyUrl;
             _proxyUsername = proxyUsername;
             _proxyPassword = proxyPassword;
-            _client = CreateClient(proxyUrl, proxyUsername, proxyPassword);
+            var created = CreateClient(proxyUrl, proxyUsername, proxyPassword, Cookies);
+            _client = created.client;
+            handler = created.handler;
         }
 
-        private static HttpClient CreateClient(string? proxyUrl, string? proxyUsername = null, string? proxyPassword = null)
+        private static (HttpClient client, HttpClientHandler handler) CreateClient(
+            string? proxyUrl, string? proxyUsername, string? proxyPassword, CookieContainer cookies)
         {
             var handler = new HttpClientHandler
             {
-                AutomaticDecompression = System.Net.DecompressionMethods.All
+                AutomaticDecompression = System.Net.DecompressionMethods.All,
+                CookieContainer = cookies,
+                UseCookies = true,
             };
 
             if (!string.IsNullOrEmpty(proxyUrl))
@@ -58,11 +71,13 @@ namespace PddLib
                 handler.UseProxy = true;
             }
 
-            return new HttpClient(handler)
+            var client = new HttpClient(handler)
             {
                 DefaultRequestVersion = new Version(2, 0),
                 DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
             };
+
+            return (client, handler);
         }
 
         /// <summary>
@@ -80,10 +95,21 @@ namespace PddLib
         public async Task<HttpResult> PostFullAsync(string url, object body, Dictionary<string, string>? headers = null)
         {
             var json = JsonSerializer.Serialize(body);
+            return await PostRawAsync(url, json, headers);
+        }
+
+        /// <summary>
+        /// 发送 POST 请求，body 为已序列化好的原始 JSON 字符串 (逐字节原样发送)。
+        /// 用于需要 body 与签名 (如 x-p1) 完全自洽的接口。
+        /// </summary>
+        public async Task<HttpResult> PostRawAsync(string url, string json, Dictionary<string, string>? headers = null)
+        {
             var request = new HttpRequestMessage(HttpMethod.Post, url)
             {
                 Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
             };
+            request.Content.Headers.Remove("Content-Type");
+            request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json;charset=UTF-8");
 
             if (headers != null)
             {

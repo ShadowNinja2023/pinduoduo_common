@@ -32,6 +32,21 @@ namespace PddLib.Register
         }
 
         /// <summary>
+        /// 从一台真实淘宝设备记录产出一台"同品牌机型的全新 mock 设备":
+        ///   转换器 (<see cref="TaobaoToPddConverter"/>) 先出机型基准 (fingerprint/brand/model/screen/... 真机值),
+        ///   再随机化唯一性字段 (android_id/oaid/uuid/MAC/p47/... 全新), 保留机型指纹。
+        /// </summary>
+        /// <param name="record">RepedCrypto 解出的检测项集合</param>
+        /// <param name="report">转换报告 (哪些字段映射/保留基线/缺失)</param>
+        public static DeviceProfile NewDeviceFromTaobao(TaobaoDeviceRecord record, out ConversionReport report)
+        {
+            var (d, rep) = TaobaoToPddConverter.Convert(record);
+            report = rep;
+            Randomize(d);   // 保留 D 类机型指纹, 随机化 A/B/C 类唯一值
+            return d;
+        }
+
+        /// <summary>
         /// 就地随机化一个 DeviceProfile 的唯一性字段 (A/B/C 类), 保留 D 类机型指纹。
         /// </summary>
         public static void Randomize(DeviceProfile d)
@@ -84,6 +99,9 @@ namespace PddLib.Register
             d.BodyCookie = "";
             d.HeaderApiUid = "";
 
+            // p2 attestation: 随机化 verifiedBootKey/verifiedBootHash (每台 root-of-trust 不同, 避免固定指纹)
+            d.P2 = PddLib.Crypto.P2Codec.RandomizeUniqueValues(d.P2);
+
             // mock 干净设备建议关闭调试标志 (真机样本为 1)
             d.AdbEnabled = 0;
             d.DevelopmentEnabled = 0;
@@ -97,6 +115,10 @@ namespace PddLib.Register
             d.P125 = P125Codec.GenerateRandom();
             // p49: 基于样本基线 CSV, 只扰动"真实设备间会变化"的 inode (可写文件/sdcard/proc)
             d.P49 = P49Codec.RandomizeFromBaseline(d.P49);
+            // app 安装路径随机段 (Android10+ /data/app/~~seg1/pkg-seg2/): 每台唯一。
+            // ★ 同时喂 type15.p75 与 type16 maps 清单 (RegisterClient.Build07/Build16 联动), 保证一致。
+            d.ApkDirSeg1 = RandomInstallSeg();
+            d.ApkDirSeg2 = RandomInstallSeg();
 
             // ===== D 类里实际会动态变化的环境量 (机型不变, 但每次/每机取值不同) =====
             // cpuFrequency: 只随机 curFreq (实时频点), max/min (频率策略上下限) 保持不变
@@ -232,6 +254,17 @@ namespace PddLib.Register
             var sb = new StringBuilder(nBytes * 2);
             foreach (byte x in b) sb.Append(x.ToString("x2", CultureInfo.InvariantCulture));
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Android 10+ 安装目录随机段: 16 字节随机 → base64url (含 "==" 填充, 22+2 字符),
+        /// 与真机 /data/app/~~&lt;seg&gt; 命名一致 (Base64.URL_SAFE)。
+        /// </summary>
+        public static string RandomInstallSeg()
+        {
+            byte[] b = new byte[16];
+            RandomNumberGenerator.Fill(b);
+            return Convert.ToBase64String(b).Replace('+', '-').Replace('/', '_');
         }
 
         /// <summary>

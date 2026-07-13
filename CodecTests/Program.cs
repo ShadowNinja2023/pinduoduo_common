@@ -1,5 +1,6 @@
 using System.Text;
 using PddLib.Crypto;
+using PddLib.Crypto.Extra;
 using PddLib.Register;
 
 // ============================================================
@@ -133,6 +134,175 @@ Console.WriteLine("\n==== p47 (native 自产随机会话标识) ====");
     Check("p47 → MD5 key 16 字节 (x-p1 RC4 key)", k.Length == 16);
 
     Console.WriteLine($"  示例生成: {P47Generator.New()}");
+}
+
+Console.WriteLine("\n==== extra(1008) 容器编解码 (迁移冒烟, KeyTable + 分帧 + 静态 keystream, 不依赖 Unicorn) ====");
+{
+    // 真机 _b 容器 (105B) + 已知 keystream (unidbg patch-seed dump 前 80B)
+    byte[] bContainer = Extra1008Codec.HexToBytes(
+        "0fc100001008002b004d4279f1e04296" + "1000231fc38e6fc7700e6a702bf19b19" +
+        "bf4c22d0e64d5a50130787d32e1e157b" + "eeb8df891e000501daa4c8c67cb0f2c9" +
+        "3d7e3a7ba635fb3128079188e93b32a2" + "0b2a64b71527d000050d28852652bb81" +
+        "3f2be3da2ca517dd35");
+    byte[] bKeystream = Extra1008Codec.HexToBytes(
+        "583db1ef01a35234483413b4da58fe1d" + "6791a7151c287055e6e11646574db8e1" +
+        "e2ab3286bdb519c297a74b5c00008401" + "d90b5325a3aad360108056064684371d" +
+        "8ba7040fc6ad1d5886ab0e9f23a048e7");
+    byte[] bSeed = Seed.FromHex("4279f1e042961000f96fc8e1c7ce8ac6");
+    const string bPlain = "{\"rand\":\"D8EAAAQEAAXFxcRa28XB6VY=\",\"userenv\":{\"4\":{\"2\":[\"\"],\"3\":[\"\"]},\"seq\":4}}";
+
+    // 1) KeyTable 从容器索引查表得 KEY_8B (数据文件已随输出复制)
+    var keyTable = KeyTable.LoadDefault();
+    var w0 = Index3.FromMarker(bContainer.AsSpan(53, 4)); // (5,1,218)
+    var w1 = Index3.FromMarker(bContainer.AsSpan(87, 4)); // (5,13,40)
+    string key8 = Convert.ToHexString(keyTable.DeriveKey8(w0, w1)).ToLowerInvariant();
+    Check("KeyTable 索引→KEY_8B == f96fc8e1c7ce8ac6", key8 == "f96fc8e1c7ce8ac6", key8);
+
+    // 2) 分帧解析: _b 标准变体 (counter@16:18, body@18)
+    var fb = Extra1008Codec.ParseFraming(bContainer);
+    Check("_b 分帧 = 标准变体 (body@18, 无头部标记)", fb.BodyStart == 18 && fb.HeaderWord0Pos == -1,
+        $"body@{fb.BodyStart} hdrW0@{fb.HeaderWord0Pos} counter={Convert.ToHexString(fb.Counter).ToLowerInvariant()}");
+
+    // 3) 用静态 keystream 走全自动解密, 应得干净 JSON
+    var ksGen = new StaticKeystreamGenerator().Add(bSeed, bKeystream);
+    var codec = new Extra1008Codec(keyTable, ksGen);
+    var r = codec.DecryptAuto(bContainer);
+    Check("_b DecryptAuto 明文 == 期望 JSON", r.PlaintextUtf8 == bPlain, r.PlaintextUtf8);
+    Check("_b DecryptAuto KEY_8B 一致", Convert.ToHexString(r.Key8).ToLowerInvariant() == "f96fc8e1c7ce8ac6");
+
+    // 4) _d 头部标记变体的分帧识别 (仅结构, 不需 keystream)
+    byte[] dHead = Extra1008Codec.HexToBytes("0fc100001008000600a24279ec701d4800010ee98000e3fb");
+    var fd = Extra1008Codec.ParseFraming(dHead);
+    Check("_d 分帧 = 头部标记变体 (word0@16, counter@20:22, body@22)",
+        fd.HeaderWord0Pos == 16 && fd.BodyStart == 22 && Convert.ToHexString(fd.Counter).ToLowerInvariant() == "8000",
+        $"body@{fd.BodyStart} hdrW0@{fd.HeaderWord0Pos} counter={Convert.ToHexString(fd.Counter).ToLowerInvariant()}");
+
+    // 5) 基于 lenflag 的确定性解码 (无启发式): 标记偏移由 lenflag 读出
+    var lf = Extra1008Codec.ParseLenflag(bContainer);
+    Check("_b lenflag 定位标记 = @53/@87", lf.Word0MarkerOffset == 53 && lf.Word1MarkerOffset == 87,
+        $"w0@{lf.Word0MarkerOffset} w1@{lf.Word1MarkerOffset}");
+    var rl = codec.DecryptByLenflag(bContainer);
+    Check("_b DecryptByLenflag 明文 == 期望 JSON", rl.PlaintextUtf8 == bPlain);
+
+    // 6) ★ 编码方向逐字节往返: Encrypt(明文, 观测偏移) == 原始容器
+    byte[] ptBytes = Encoding.UTF8.GetBytes(bPlain);
+    byte[] nonce = bContainer[12..16];
+    byte[] counter = bContainer[16..18];
+    byte[] reenc = codec.Encrypt(ptBytes, nonce, counter, w0, w1, 53, 87);
+    Check("_b Encrypt 逐字节往返 == 原始容器",
+        Convert.ToHexString(reenc) == Convert.ToHexString(bContainer),
+        $"{reenc.Length}B vs {bContainer.Length}B");
+
+    // 7) mock 便捷编码 → 解回明文 (自动选标记位, lenflag 定位)
+    byte[] mock = codec.EncryptMock(ptBytes, nonce, counter, w0, w1);
+    var rmock = codec.DecryptByLenflag(mock);
+    Check("_b EncryptMock → DecryptByLenflag 明文一致", rmock.PlaintextUtf8 == bPlain,
+        $"容器 {mock.Length}B");
+}
+
+Console.WriteLine("\n==== type15 es (SecureNative.dsi, RC4 keystream + XOR + base64) ====");
+{
+    // 真机 report_03 es (921B 密文, base64 1228 字符)
+    const string sampleEs =
+        "wZtnjfHzrGfb6jxWmZWsk4/M5aDvSnpLYa60uHlcqGP5zJqFR5SitmjAix3sk6eO5f7gQUgtPyAkWkWfcxMNK/OgF3bycRyYjbHeU0aMRVU3A2ilEebP1kWD4j7IA1SeAZbTaXbkYUbC3aydOvh954kVSL4FEcm3JAkWdx/ONdr7IIqhgpB/TwMcuK9g99D3mDIqY1ntNucQuwKLnuryJMzkfs7JfLgoipCncyPwCJE+kbbyGbQLM2dXiPUVs5eRsVL6SDqQzNDR9trHDvKxRhC42wadlo3yLVVy3xNCRwtydnlIURstvmDU+rbz5xW2viR0cTuD+LbzUDdE9XSEvlevV+LatAHro8+C9JAhGcj0+3lJDfBSm55HHjbONblI2Qlk/BMYiv1sOb/GXwxamwtu63d1fiRAkTxsVTubYqdvl75LXMBPROfGKSgTeEgMtqBVOjG6+k24WdfqzYQ/8igedLyOSBgxav8xsy5gV3PDDOpx14oxgmHZWteWMsXqxir33Ibi+hPZWeJkhBDRA97VS1TdVar19L4ZKOf0IdzdjmAoo1+n+0X4K35s6BqlZYNE5PRJkA/YQAfcBQnblOJTDhwf1pWrroXnWMMfxOOFFF3S1fzsllgtT26DwgQzZtmmPJTBakQphj4NKsnnNdHvr3s+XteqkTh9CMB/8RIvKKUs79zmN6byRpAAvbWvIzY8TxPuQ5jzyZC+0nfByvQMxgmbrsfhmrfAETRRFYQw3K3ijQ2e6Azhvlfbq+aVH2/C1x68fQId1XkHXnGhb3LuZdBeE/zGx0WsBeoysHEGbSD4+FVpnr9p2V2gofpPbgdRJlC6+bsZEKvNoNHt49EmjDUqj8duI43fcU0xbxgkRnXFoWjLjgc6jhTf3Idn/82X0PD+Xb9FXmhSd/C34MW0UoUS8e2vdkWx61YWcIolbC+ceoywI7yDIyTCdPQL9V+MSydQnGgVlO/aSH6gImefqghZPDoVdIfEP1p6Ry65VZSR8eO6ZFmuztUWf2OsEfBrvcvCSElLdFirliiC2EQcv9PzBX3vSTJfFi/eXrayq6sbixvHw8n4Ajo7pLLzk2uPxN96svyMxT/8CsdJ0NOQ5vFc1Z/ifXqspklRB8q6g9cPE/9AhwoOx53ONWr+4svRPMeJDe9wiqyeMNrY1qWT1tWFvjDsFHHsBZRLoW20B1TmlpGp7WfQ3i5PZW+W2+H3w1HzBZOB";
+
+    // 1) RC4 keystream 前 16B == trace 坐实值
+    string ks16 = Convert.ToHexString(Type15Codec.Keystream(16)).ToLowerInvariant();
+    Check("type15 RC4 keystream[:16] == 坐实值", ks16 == "bab917bbc0d19656ecd20f6ea8a69aaa", ks16);
+
+    // 2) 解真机 es (921B) → 完整合法明文
+    string pt = Type15Codec.Decode(sampleEs);
+    Check("type15 解密长度 == 921B", Encoding.UTF8.GetByteCount(pt) == 921, pt.Length.ToString());
+    Check("type15 明文以 {\"p61\": 开头", pt.StartsWith("{\"p61\":1783813690041,\"p62\":{\"0\":\"3f2303d5ff8303d1fd7b08a9\""));
+    Check("type15 明文以 \"p131\":4} 收尾", pt.EndsWith("\"p131\":4}"), pt.Substring(Math.Max(0, pt.Length - 24)));
+
+    // 3) 逐字节往返: Encode(Decode(es)) == 原始 es
+    Check("type15 往返 Encode∘Decode == 原始 es", Type15Codec.Encode(pt) == sampleEs);
+
+    // 4) mock: 自造明文 → es → 解回一致
+    string mockPt = "{\"p61\":1799999999000,\"p62\":{\"0\":\"\",\"8\":\"\"},\"p131\":2}";
+    Check("type15 mock 明文往返一致", Type15Codec.Decode(Type15Codec.Encode(mockPt)) == mockPt);
+
+    // 5) Type15Builder 逐字节复刻 report_03 (明文 + es)
+    const string plain03 =
+        "{\"p61\":1783813690041,\"p62\":{\"0\":\"3f2303d5ff8303d1fd7b08a9\",\"1\":\"3f2303d5ff8306d1fd7b14a9\",\"2\":\"3f2303d5ff8303d1fd7b08a9\",\"3\":\"3f2303d5ffc306d1fd7b15a9\",\"4\":\"3f2303d5ff8303d1fd7b08a9\",\"5\":\"3f2303d5ff8306d1fd7b14a9\",\"6\":\"3f2303d5ff4303d1fd7b07a9\",\"7\":\"3f2303d5ff4306d1fd7b13a9\",\"8\":\"5f2403d5e22800b43f2303d5\"},\"p63\":\"\",\"p64\":\"4040\",\"p69\":\"1\",\"p70\":\"f41042fb\",\"p71\":\"b09f677cd333cef2e771eec9448eeca77cc62879\",\"p73\":\"64\",\"p74\":\"evocpqAfyMlLu09Qlg3UPycANJP320TmoEYAftoz0urXMr/hkA4=\",\"p75\":\"sx19vJtmvbAvGdxbeHBOCSREqYwKr5oafR+BgOCu6MaWu85ZpJVGjFYVAYudRiO3ZfmU0WVgg2TUUdy9WsWBoqBnzo8aTPleVcMzClXXyt+sSzCT7i/5GGjOk4M=\",\"p82\":30290085,\"p83\":30035968,\"p84\":\"SW+urnbpru6b51wFwp/c\",\"p93\":\"VM6O6YQY7vPxtESpMKdA\",\"p94\":\"0\",\"p97\":\"1779712666437\",\"p98\":\"MBo+PlPLqS0CvfEjPVDlivZhVsJG385H1uh326KeYuS2hXIo4L9KxuKvx8NVz7GtXJ9cQPrA18xDDfCH+uhSGWk4e4uNBDI+oi0Vhn4EL0VWICMu82fmAnZdcx10cxQLeB1PhqYTP+48cTM9qOlva5z8YJA8MImC4b3c+bSisso=\",\"p131\":4}";
+    string builtPt = Type15Builder.BuildEsPlaintext(new Type15Options());
+    Check("Type15Builder 明文逐字节 == report_03", builtPt == plain03, builtPt.Length + " vs " + plain03.Length);
+    Check("Type15Builder es == report_03 es", Type15Builder.BuildEs() == sampleEs);
+
+    // 6) mock: 换 ts/类名/路径 → 解回应含新值
+    var mo = new Type15Options { ReportTs = 1799000000123, P74Plain = "com.demo.App", P84Plain = "1799000000123_1" };
+    string mockEs = Type15Builder.BuildEs(mo);
+    var back = System.Text.Json.JsonDocument.Parse(Type15Codec.Decode(mockEs)).RootElement;
+    Check("Type15Builder mock p61 生效", back.GetProperty("p61").GetInt64() == 1799000000123L);
+    Check("Type15Builder mock p74 解回类名",
+        Type15Codec.DecodeSubBlob(back.GetProperty("p74").GetString(), Type15Baseline.KsP74) == "com.demo.App");
+
+    // 7) dv 开关: dv=18 无 p131 (17字段) / dv=19 有 (18字段)
+    string pt18 = Type15Builder.BuildEsPlaintext(new Type15Options { Dv = 18 });
+    string pt19 = Type15Builder.BuildEsPlaintext(new Type15Options { Dv = 19 });
+    Check("Type15Builder dv=18 无 p131 且以 } 收尾", !pt18.Contains("\"p131\"") && pt18.EndsWith("}"));
+    Check("Type15Builder dv=19 含 p131", pt19.Contains("\"p131\":4}"));
+    var d18 = System.Text.Json.JsonDocument.Parse(pt18).RootElement;
+    Check("Type15Builder dv=18 es 可解且字段数=17",
+        System.Text.Json.JsonDocument.Parse(Type15Codec.Decode(Type15Codec.Encode(pt18))).RootElement.EnumerateObject().Count() == 17,
+        d18.EnumerateObject().Count().ToString());
+}
+
+Console.WriteLine("\n==== apk 安装路径随机化 (type15.p75 ↔ type16 maps 联动一致) ====");
+{
+    var dev = DeviceMocker.NewDevice();
+    // 1) 随机段 != 基线, 且 ApkPath 由两段拼出
+    Check("mock 段1 已随机化 (!=基线)", dev.ApkDirSeg1 != DeviceProfile.BaselineApkSeg1, dev.ApkDirSeg1);
+    Check("mock 段2 已随机化 (!=基线)", dev.ApkDirSeg2 != DeviceProfile.BaselineApkSeg2, dev.ApkDirSeg2);
+    Check("ApkPath 由两段拼出",
+        dev.ApkPath == $"/data/app/~~{dev.ApkDirSeg1}/com.xunmeng.pinduoduo-{dev.ApkDirSeg2}/base.apk");
+    Check("ApkPath 长度 ≤ p75 keystream(117B)",
+        System.Text.Encoding.UTF8.GetByteCount(dev.ApkPath) <= Type15Baseline.KsP75.Length,
+        System.Text.Encoding.UTF8.GetByteCount(dev.ApkPath).ToString());
+
+    // 2) es.p75 解回 == 设备 ApkPath
+    string es = Type15Builder.BuildEs(new Type15Options { P75Plain = dev.ApkPath });
+    var esObj = System.Text.Json.JsonDocument.Parse(Type15Codec.Decode(es)).RootElement;
+    string p75 = Type15Codec.DecodeSubBlob(esObj.GetProperty("p75").GetString(), Type15Baseline.KsP75);
+    Check("es.p75 解回 == 设备 ApkPath", p75 == dev.ApkPath, p75);
+
+    // 3) type16 maps 用同一对随机段替换后, 与 p75 路径一致
+    string maps = Type16Baseline.MapsRegions
+        .Replace(DeviceProfile.BaselineApkSeg1, dev.ApkDirSeg1)
+        .Replace(DeviceProfile.BaselineApkSeg2, dev.ApkDirSeg2);
+    Check("type16 maps 含设备随机段 (与 p75 联动)",
+        maps.Contains(dev.ApkDirSeg1) && maps.Contains(dev.ApkDirSeg2) && !maps.Contains(DeviceProfile.BaselineApkSeg1));
+    Check("type16 maps 与 p75 同一安装目录前缀",
+        maps.Contains($"/data/app/~~{dev.ApkDirSeg1}/com.xunmeng.pinduoduo-{dev.ApkDirSeg2}/"));
+}
+
+Console.WriteLine("\n==== type21 info (SecureNative.atn, RC4 keystream + XOR + base64) ====");
+{
+    // 1) RC4 keystream 前 16B == trace(unidbg-trace-atn.log) 逐字节坐实值
+    string ks16 = Convert.ToHexString(Type21Codec.Keystream(16)).ToLowerInvariant();
+    Check("type21 RC4 keystream[:16] == 坐实值", ks16 == "5a51998dac93a3b4eff887877400bb43", ks16);
+
+    // 2) 解真机 08 info (6408B) → 100% 可打印合法 JSON {"0":"..."}
+    string info = Extra0708Baseline.Info08;
+    string pt = Type21Codec.Decode(info);
+    Check("type21 解密长度 == 6408B", Encoding.UTF8.GetByteCount(pt) == 6408, Encoding.UTF8.GetByteCount(pt).ToString());
+    Check("type21 明文以 {\"0\":\" 开头", pt.StartsWith("{\"0\":\""));
+    Check("type21 明文以 \"} 收尾", pt.EndsWith("\"}"), pt.Substring(Math.Max(0, pt.Length - 8)));
+    Check("type21 明文 100% 可打印",
+        pt.All(c => (c >= ' ' && c <= '~') || c == '\n' || c == '\r' || c == '\t'));
+
+    // 3) 逐字节往返: Encode(Decode(info)) == 原始 info
+    Check("type21 往返 Encode∘Decode == 原始 info", Type21Codec.Encode(pt) == info);
+
+    // 4) mock: 自造明文 → info → 解回一致 (任意长度)
+    string mockPt = "{\"0\":\"MIIDkTCCAzegAwIBAgIBATAKBggqhkjOPQQDAj%2Fmock%3D\"}";
+    Check("type21 mock 明文往返一致", Type21Codec.Decode(Type21Codec.Encode(mockPt)) == mockPt);
+
+    // 5) Info08Builder: 明文重组 == 解密真机明文; info 逐字节 == 真机基线密文
+    Check("Info08Builder 明文重组 == 解密真机明文", Info08Builder.BuildPlaintext() == pt);
+    Check("Info08Builder info == report_08 基线密文", Info08Builder.BuildInfo() == info);
+    Check("Info08Baseline 证书链 5 张", Info08Baseline.CertChain.Length == 5, Info08Baseline.CertChain.Length.ToString());
 }
 
 Console.WriteLine($"\n==== 汇总: PASS={pass}  FAIL={fail} ====");

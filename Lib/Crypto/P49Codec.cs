@@ -57,18 +57,20 @@ namespace PddLib.Crypto
         /// 由样本基线 p49 (base64) 产出随机化的 p49: 仅扰动 VariableIndices 指向的 inode,
         /// 其余保留。空段保持空。返回新的 base64。
         /// </summary>
-        public static string RandomizeFromBaseline(string baselineBase64, byte[]? key = null)
+        /// <param name="onlyVariableIndices">true=仅浮动 VariableIndices; false(默认)=浮动所有非空 inode</param>
+        public static string RandomizeFromBaseline(string baselineBase64, byte[]? key = null,
+            bool onlyVariableIndices = false)
         {
             string csv = DecryptToCsv(baselineBase64, key);
             string[] parts = csv.Split(',');
-            var varSet = new HashSet<int>(VariableIndices);
+            var varSet = onlyVariableIndices ? new HashSet<int>(VariableIndices) : null;
 
             for (int i = 0; i < parts.Length; i++)
             {
-                if (!varSet.Contains(i)) continue;       // 非可变索引保留
-                if (parts[i].Length == 0) continue;       // 空段保持空 (文件本就不存在)
+                if (varSet != null && !varSet.Contains(i)) continue;  // 限定模式: 非可变索引保留
+                if (parts[i].Length == 0) continue;                    // 空段保持空 (系统包探测/文件不存在)
                 if (!long.TryParse(parts[i], out long v)) continue;
-                parts[i] = PerturbInode(v).ToString();
+                parts[i] = PerturbInode(v).ToString();                 // 比例浮动, 保留量级 (小 inode 被 clamp 保住)
             }
             return EncryptCsv(string.Join(",", parts), key);
         }

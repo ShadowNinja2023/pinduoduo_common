@@ -35,13 +35,18 @@ namespace PddLib.Register
         private readonly HttpClient _client;
         private readonly DeviceProfile _device;
 
-        public RegisterClient(DeviceProfile device, string? proxyUrl = null)
+        public RegisterClient(DeviceProfile device, string? proxyUrl = null, CookieContainer? cookieContainer = null)
         {
             _device = device;
             var handler = new HttpClientHandler
             {
                 AutomaticDecompression = DecompressionMethods.All
             };
+            if (cookieContainer != null)
+            {
+                handler.CookieContainer = cookieContainer;   // 与业务/登录共用, 自动收发 api_uid
+                handler.UseCookies = true;
+            }
             if (!string.IsNullOrEmpty(proxyUrl))
             {
                 handler.Proxy = new WebProxy(proxyUrl);
@@ -98,13 +103,22 @@ namespace PddLib.Register
         public string BuildBody01(byte[]? random32 = null, string pddid = "")
         {
             byte[] plaintext = MetaInfoSubBuilder.BuildPlaintext(_device, pddid: pddid);
+            return WrapMetaInfoBody(plaintext, random32);
+        }
+
+        /// <summary>
+        /// 把 meta_info 表单 plaintext 封成 01/04 通用的 body JSON:
+        /// {"key","data","platform","name","collect_begin_time","collect_end_time"}。
+        /// '/' 按 Java JSONObject 习惯转义为 '\/' (保证作 x-p1 bd 入参时 seg 计算正确)。
+        /// </summary>
+        private string WrapMetaInfoBody(byte[] plaintext, byte[]? random32)
+        {
             string packet = UseCapturedKey
                 ? PddBodyCrypto.EncryptPacketWithCapturedKey(plaintext, CapturedKeyField)
                 : PddBodyCrypto.EncryptPacket(plaintext, random32);
             string keyB64 = ExtractField(packet, "key");
             string dataB64 = ExtractField(packet, "data");
             long uptime = Environment.TickCount64 & 0x7FFFFFFF;
-            // Java JSONObject 默认对 '/' 转义为 '\/'
             return "{\"key\":\"" + JsonEscapeSlash(keyB64) + "\"," +
                    "\"data\":\"" + JsonEscapeSlash(dataB64) + "\"," +
                    "\"platform\":\"android\",\"name\":\"pdd\"," +
@@ -121,6 +135,9 @@ namespace PddLib.Register
             string respBody = await resp.Content.ReadAsStringAsync();
             string? etag = resp.Headers.TryGetValues("etag", out var ev)
                 ? string.Join(",", ev) : null;
+
+            Log.Debug($"设备注册 SendRawAsync-> {respBody}");
+
             return new RegisterResponse
             {
                 StatusCode = resp.StatusCode,
@@ -138,6 +155,9 @@ namespace PddLib.Register
             string respBody = await resp.Content.ReadAsStringAsync();
             string? etag = resp.Headers.TryGetValues("etag", out var ev)
                 ? string.Join(",", ev) : null;
+
+            Log.Debug($"设备注册Send01Async -> {respBody}");
+
             return new RegisterResponse
             {
                 StatusCode = resp.StatusCode,
@@ -145,6 +165,148 @@ namespace PddLib.Register
                 Etag = etag,
                 Headers = resp.Headers
             };
+        }
+
+        // ==================== 04 报文 (meta_info / meta_type=all / scene=1) ====================
+
+        /// <summary>
+        /// 构造 04 报文完整 HTTP 请求 (不发送)。
+        /// 04 = 01 同接口/同单层加密/同 header 集, 仅 meta_type=all 全量填充字段。
+        /// </summary>
+        /// <param name="pddid">01 下发的 pdd_id (body pddid + header etag 同值)。空则按全新设备 known_device=0。</param>
+        /// <param name="st">请求发起 ms; null 取当前</param>
+        /// <param name="random32">body 加密随机; null 真随机, 传固定值用于复现</param>
+        /// <param name="options">04 会话/运行时参数; null 则按 mock 设备现状自动生成</param>
+        public HttpRequestMessage Build04(string pddid, long? st = null, byte[]? random32 = null,
+            Meta04Options? options = null)
+        {
+            long stMs = st ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            // 04 用 an/pk/extra 长... 实为 Report04 形态 (含 android_id, 必须与本次请求 ts 自洽)
+            if (_device.IsMock)
+                _device.RecomputeUserEnv2(stMs, form: DeviceProfile.UserEnv2Form.Report04);
+
+            Meta04Options opt = options ?? BuildMock04Options(pddid, stMs);
+            string body = BuildBody04(opt, random32);
+
+            var req = new HttpRequestMessage(HttpMethod.Post, $"{ApiBase}/project/meta_info?pdduid=")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+            req.Content.Headers.Remove("Content-Type");
+            req.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json;charset=UTF-8");
+
+            // 04 header 集与 01 相同 (x-p1 ul=/project/meta_info, bd=本 body, et=pddid)
+            foreach (var (k, v) in BuildHeaders(stMs, bd: body, et: pddid))
+                req.Headers.TryAddWithoutValidation(k, v);
+
+            return req;
+        }
+
+        /// <summary>生成 04 报文 body JSON (单层加密, 与 01 同封装)。</summary>
+        public string BuildBody04(Meta04Options opt, byte[]? random32 = null)
+        {
+            byte[] plaintext = MetaInfoAllBuilder.BuildPlaintext(_device, opt);
+            return WrapMetaInfoBody(plaintext, random32);
+        }
+
+        /// <summary>
+        /// 按当前 (mock) 设备现状生成 04 的会话/运行时参数:
+        /// known_device 随是否持有 pddid, p85/fk_data 联动本次会话 dynso 时间戳, mediaDrm 按设备 Widevine ID 重建。
+        /// </summary>
+        public Meta04Options BuildMock04Options(string pddid, long stMs)
+        {
+            long dynsoTs = stMs - Random.Shared.Next(2000, 12000);
+            string dynsoRand = Random.Shared.NextInt64(0, 10_000_000_000L).ToString("D10");
+            string p85Hex = DeviceMocker.RandomHex(5);
+            string p85Plain = PFieldsCodec.BuildP85Plain(dynsoTs, p85Hex);
+
+            return new Meta04Options
+            {
+                Pddid = pddid,
+                KnownDevice = string.IsNullOrEmpty(pddid) ? 0 : 1,  // 已持有 pddid → 已知设备
+                Cookie = _device.BodyCookie,                        // mock 新设备已置空
+                CurrentTimeMs = stMs,
+                InstallTimeMs = _device.P46InstallTime,
+                AppUpdateTimeMs = _device.P46InstallTime,
+                BootTime = _device.BootTime,
+                LocalSequence = 1,
+                P26 = MetaInfoAllBaseline.P26Mock,                  // 干净设备无用户 CA
+                DynsoLoadTs = dynsoTs,
+                P85 = PFieldsCodec.EncodeWire("p85", p85Plain),     // 与 fk_data.dynso_load_ts 联动
+                MediaDrm = MetaInfoAllBuilder.BuildMediaDrmWire(_device.MediaDrmWidevineId),
+                FkData = FkDataBuilder.Build(dynsoTs, dynsoRand),
+            };
+        }
+
+        /// <summary>发送 04 报文并返回响应。</summary>
+        public async Task<RegisterResponse> Send04Async(string pddid, long? st = null,
+            byte[]? random32 = null, Meta04Options? options = null)
+        {
+            return await SendRawAsync(Build04(pddid, st, random32, options));
+        }
+
+        // ==================== 06 报文 (meta_info / meta_type=all / scene=14) ====================
+
+        /// <summary>06 user_env2 内嵌 extra 字段 ("01"+base64); null=复刻样本基线。
+        /// mock 全新干净设备如需重算 (adb 关闭等), 可传 EncryptMock(真实 G) 产出的字段。</summary>
+        public string? Extra06Field { get; set; } = null;
+
+        /// <summary>
+        /// 构造 06 报文完整 HTTP 请求 (不发送)。
+        /// 06 = 04 同接口/同加密/同 header, 差异: scene=14, 多 p48 字段, user_env2 切 Form06 长形态。
+        /// </summary>
+        /// <param name="pddid">已注册设备的 pdd_id (body pddid + header etag)</param>
+        /// <param name="st">请求发起 ms; null 取当前</param>
+        /// <param name="random32">body 加密随机; null 真随机</param>
+        /// <param name="options">06 会话/运行时参数; null 按 mock 现状生成 (scene=14 + p48 + Form06 user_env2)</param>
+        public HttpRequestMessage Build06(string pddid, long? st = null, byte[]? random32 = null,
+            Meta04Options? options = null)
+        {
+            long stMs = st ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            Meta04Options opt = options ?? BuildMock06Options(pddid, stMs);
+            string body = BuildBody04(opt, random32);   // 06 body 封装与 04 完全一致
+
+            var req = new HttpRequestMessage(HttpMethod.Post, $"{ApiBase}/project/meta_info?pdduid=")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+            req.Content.Headers.Remove("Content-Type");
+            req.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json;charset=UTF-8");
+
+            foreach (var (k, v) in BuildHeaders(stMs, bd: body, et: pddid))
+                req.Headers.TryAddWithoutValidation(k, v);
+
+            return req;
+        }
+
+        /// <summary>
+        /// 按当前 (mock) 设备现状生成 06 会话/运行时参数:
+        /// 在 04 基础上置 scene=14、生成 p48、把 user_env2 切成 Form06 长形态
+        /// (含 realtime 分辨率 + 内嵌 extra 检测容器)。
+        /// </summary>
+        public Meta04Options BuildMock06Options(string pddid, long stMs)
+        {
+            var opt = BuildMock04Options(pddid, stMs);
+            opt.Scene = 14;
+            // p48: 充电状态行, ts 取略早于请求时刻 (复刻样本形态)
+            opt.P48 = $"CHG|{stMs - Random.Shared.Next(1000, 4000)}|0|false|内置屏幕|null|1";
+
+            // user_env2 长形态 (Form06): id=本机 android_id, ts=请求时刻, extra=基线/自定义
+            string extraField = Extra06Field ?? Ue2Form06Baseline.ExtraField;
+            int ue2Seq = Random.Shared.Next(8, 40);   // ues 内部独立 seq (样本 11); 服务端不强校验具体值
+            var plain = UserEnv2Codec.Form06(
+                _device.AndroidId, stMs, ue2Seq, Ue2Form06Baseline.RealtimeContent, extraField);
+            opt.UserEnv2 = UserEnv2Codec.GenerateFrom(plain);
+            return opt;
+        }
+
+        /// <summary>发送 06 报文并返回响应。</summary>
+        public async Task<RegisterResponse> Send06Async(string pddid, long? st = null,
+            byte[]? random32 = null, Meta04Options? options = null)
+        {
+            return await SendRawAsync(Build06(pddid, st, random32, options));
         }
 
         // ==================== 02 报文 (extra / data_type=1) ====================
@@ -239,8 +401,6 @@ namespace PddLib.Register
                 ("accept-encoding", "gzip"),
                 ("anti-token", antiToken),
             };
-            if (!string.IsNullOrEmpty(_device.HeaderApiUid))
-                h.Add(("cookie", $"api_uid={_device.HeaderApiUid}"));
             return h;
         }
 
@@ -341,6 +501,90 @@ namespace PddLib.Register
             return await SendRawAsync(Build05(pddid, st, random32, wtp));
         }
 
+        // ==================== 07 / 08 报文 (extra / data_type=15 / 21) ====================
+
+        /// <summary>构造 07/08 报文请求 (extra, 单层 encryptInfo, 无 collect_time; header 同 02)。</summary>
+        private HttpRequestMessage BuildExtraSimple(string pddid, byte[] plaintext, long? st)
+        {
+            long stMs = st ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string packet = UseCapturedKey
+                ? PddBodyCrypto.EncryptPacketWithCapturedKey(plaintext, CapturedKeyField)
+                : PddBodyCrypto.EncryptPacket(plaintext, null);
+            string body = Extra05Builder.WrapBody(packet);   // 仅 encryptInfo, 无 collect_time
+            var req = new HttpRequestMessage(HttpMethod.Post, $"{ApiBase}/api/phantom/gbdbpdv/extra?pdduid=")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+            req.Content.Headers.Remove("Content-Type");
+            req.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json;charset=UTF-8");
+            foreach (var (k, v) in BuildHeaders02(stMs, pddid))
+                req.Headers.TryAddWithoutValidation(k, v);
+            return req;
+        }
+
+        /// <summary>
+        /// 07 报文 (data_type=15, es)。es=null 时用 <see cref="Type15Builder"/> **动态生成**
+        /// (p61=本次ts, p97=设备安装时间, p75=设备 base.apk 路径, p84/p93="{ts}_1"; 其余干净基线);
+        /// 传入 es 则原样用 (复刻/调试)。dv 控制版本 (19 含 p131 / 18 无), 内外一致。
+        /// </summary>
+        public HttpRequestMessage Build07(string pddid, long? st = null, string? es = null, int dv = 19)
+        {
+            if (string.IsNullOrEmpty(pddid)) throw new ArgumentException("07 需要 pddid", nameof(pddid));
+            long stMs = st ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string esVal = es ?? Type15Builder.BuildEs(BuildType15Options(stMs, dv));
+            return BuildExtraSimple(pddid, Extra0708Builder.BuildPlaintext07(pddid, esVal, dv), stMs);
+        }
+
+        /// <summary>由设备 + 请求时刻组装 type15 es 明文参数 (mock 动态字段)。</summary>
+        private Type15Options BuildType15Options(long stMs, int dv) => new Type15Options
+        {
+            Dv = dv,
+            ReportTs = stMs,                    // p61
+            InstallTs = _device.P46InstallTime, // p97
+            P75Plain = _device.ApkPath,         // p75 base.apk 路径
+            P84Plain = stMs + "_1",             // "{ts}_1" (15B, 贴合 p84 keystream)
+            P93Plain = stMs + "_1",
+            // p62/p70/p71/p74/p98 = so版本固定/指纹类, 用 Type15Baseline 干净基线
+        };
+
+        /// <summary>08 报文 (data_type=21, info)。info=null 时用 <see cref="Info08Builder"/>
+        /// **动态生成** (Type21Codec 编码 attestation 证书链, 默认基线证书); 传入 info 则原样用 (复刻/调试)。</summary>
+        public HttpRequestMessage Build08(string pddid, long? st = null, string? info = null)
+        {
+            if (string.IsNullOrEmpty(pddid)) throw new ArgumentException("08 需要 pddid", nameof(pddid));
+            return BuildExtraSimple(pddid, Extra0708Builder.BuildPlaintext08(pddid, info), st);
+        }
+
+        /// <summary>发送 07 报文 (es 动态生成; dv 默认 19)。</summary>
+        public async Task<RegisterResponse> Send07Async(string pddid, long? st = null, string? es = null, int dv = 19)
+            => await SendRawAsync(Build07(pddid, st, es, dv));
+
+        /// <summary>发送 08 报文。</summary>
+        public async Task<RegisterResponse> Send08Async(string pddid, long? st = null, string? info = null)
+            => await SendRawAsync(Build08(pddid, st, info));
+
+        // ==================== 16 报文 (extra / data_type=16, proc-maps 注入检测) ====================
+
+        /// <summary>
+        /// 16 报文 (data_type=16, code/r)。r = base64(XOR_0x4A(maps 路径清单)), 见 <see cref="Type16Builder"/>。
+        /// 新流程独有 (旧 01~08 序列无此项), 检测 /proc/self/maps 里的注入 so。
+        /// 外层信封与 02/03/05/07/08 同 (单层 encryptInfo)。mapsRegions=null 用干净基线。
+        /// </summary>
+        public HttpRequestMessage Build16(string pddid, long? st = null, string? mapsRegions = null)
+        {
+            if (string.IsNullOrEmpty(pddid)) throw new ArgumentException("16 需要 pddid", nameof(pddid));
+            long stMs = st ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            // maps 清单里的 app 安装 ~~段 与 type15.p75 联动: 用设备的随机段替换基线段, 保证两报文一致。
+            string maps = mapsRegions ?? Type16Baseline.MapsRegions
+                .Replace(DeviceProfile.BaselineApkSeg1, _device.ApkDirSeg1)
+                .Replace(DeviceProfile.BaselineApkSeg2, _device.ApkDirSeg2);
+            return BuildExtraSimple(pddid, Type16Builder.BuildPlaintext(pddid, maps), stMs);
+        }
+
+        /// <summary>发送 16 报文。</summary>
+        public async Task<RegisterResponse> Send16Async(string pddid, long? st = null, string? mapsRegions = null)
+            => await SendRawAsync(Build16(pddid, st, mapsRegions));
+
         // ==================== headers ====================
 
         private List<(string, string)> BuildHeaders(long stMs, string bd, string et = "")
@@ -379,8 +623,6 @@ namespace PddLib.Register
                 ("user-agent", ua),
                 ("anti-token", antiToken),
             };
-            if (!string.IsNullOrEmpty(_device.HeaderApiUid))
-                h.Insert(3, ("cookie", $"api_uid={_device.HeaderApiUid}"));
             return h;
         }
 

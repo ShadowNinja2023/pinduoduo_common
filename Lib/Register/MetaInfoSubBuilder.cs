@@ -77,7 +77,7 @@ namespace PddLib.Register
             F("p23", "");                                         // 43
             F("p24", "");                                         // 44
             F("p25", "");                                         // 45
-            F("p26", "");                                         // 46
+            F("p26", MetaInfoAllBaseline.P26Mock);                // 46 干净设备非抓包基准 "[]"
             F("p27", "");                                         // 47
             F("p28", "");                                         // 48
             F("p31", "");                                         // 49

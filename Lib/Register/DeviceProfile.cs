@@ -38,8 +38,8 @@ namespace PddLib.Register
         public int RomStatus { get; set; } = 0;
         public int EthCheck { get; set; } = 0;
         public int SimState { get; set; } = 0;
-        public int AdbEnabled { get; set; } = 1;          // 样本为1; mock 建议 0
-        public int DevelopmentEnabled { get; set; } = 1;  // 样本为1; mock 建议 0
+        public int AdbEnabled { get; set; } = 0;          // mock 干净设备: adb 未开启 (adb_status=stopped/sys_usb=mtp)
+        public int DevelopmentEnabled { get; set; } = 0;  // mock 干净设备: 开发者模式关
         public int SecureLock { get; set; } = 0;
 
         // ===== 电池 =====
@@ -63,6 +63,18 @@ namespace PddLib.Register
         public string P7AbnormalApps { get; set; } = "com.smile.gifmaker|-8hTwwxJj2djT9rY4-mAYvw==;";
         public string InputMethod { get; set; } = "com.sohu.inputmethod.sogou.oem";
         public string Instrumentation { get; set; } = "android.app.Instrumentation";
+        // ===== app 安装路径随机段 (Android10+ /data/app/~~<seg1>/<pkg>-<seg2>/, per-install) =====
+        // ★ 同一对 seg 同时出现在 type15(es).p75 与 type16(proc-maps 清单) → 必须联动一致。
+        /// <summary>样本基线段1 (~~ 后)。</summary>
+        public const string BaselineApkSeg1 = "D4jsoNd_EmEwJ_s8Wz53nQ==";
+        /// <summary>样本基线段2 (包名后)。</summary>
+        public const string BaselineApkSeg2 = "BjQZUCNOcAKTo4XQtr8rVA==";
+        /// <summary>app 安装目录随机段1 (~~ 后)。默认基线; mock 随机化。</summary>
+        public string ApkDirSeg1 { get; set; } = BaselineApkSeg1;
+        /// <summary>app 安装目录随机段2 (包名后)。默认基线; mock 随机化。</summary>
+        public string ApkDirSeg2 { get; set; } = BaselineApkSeg2;
+        /// <summary>type15(es).p75: app base.apk 全路径 (由两段拼出, 与 type16 maps 清单联动一致)。长度须 ≤ p75 keystream(117B)。</summary>
+        public string ApkPath => $"/data/app/~~{ApkDirSeg1}/com.xunmeng.pinduoduo-{ApkDirSeg2}/base.apk";
 
         // ===== 加密预算字段 (算法未还原, 先复刻样本固定值) =====
         public string P49 { get; set; } =
@@ -99,8 +111,60 @@ namespace PddLib.Register
         public int ScreenHeight { get; set; } = 1871;
         public double Dpr { get; set; } = 2.75;
 
+        // ===== 04/06 (meta_type=all) 机型字段 (默认=Lenovo 基线, 与 MetaInfoAllBaseline 对齐; 转换器按机型覆盖) =====
+        /// <summary>04 dpi (densityDpi)。默认 440 (Lenovo)。</summary>
+        public int Dpi { get; set; } = 440;
+        /// <summary>04 resolution: 真实分辨率 "WxH"。</summary>
+        public string ResolutionReal { get; set; } = "1520x1904";
+        /// <summary>04 p57: 可用显示区 "W*H"。</summary>
+        public string ResolutionUsable { get; set; } = "1519*1871";
+        /// <summary>04 characteristics: Build.CHARACTERISTICS (tablet / 空)。</summary>
+        public string Characteristics { get; set; } = "tablet";
+        /// <summary>04 p18: 时区 "Asia/Shanghai GMT+08:00"。</summary>
+        public string TimeZone { get; set; } = "Asia/Shanghai GMT+08:00";
+        /// <summary>04 p20: SoC 型号 (如 SM8750P / MT6989)。</summary>
+        public string Soc { get; set; } = "SM8750P";
+        /// <summary>04 p8: 系统启动次数 (boot_count)。默认 41 (Lenovo)。</summary>
+        public int BootCount { get; set; } = 41;
+        /// <summary>04 p19: 电池容量 mAh (PowerProfile.getBatteryCapacity)。默认 7500; 输出为 "{v}.0"。</summary>
+        public int BatteryCapacityMah { get; set; } = 7500;
+        /// <summary>04 p51: 铃声 URI (原文, 未 URLEncode)。</summary>
+        public string RingtoneUri { get; set; } = "content://media/internal/audio/media/106?title=StereoTime&canonical=1";
+        /// <summary>04 p52: 通知音 URI (原文, 未 URLEncode)。</summary>
+        public string NotificationUri { get; set; } = "content://media/internal/audio/media/17?title=EtherealMallets&canonical=1";
+        /// <summary>04 p2: KeyStore attestation (线格式, url-encoded)。默认=样本基线; mock 随机化 verifiedBootKey/Hash。</summary>
+        public string P2 { get; set; } = MetaInfoAllBaseline.P2;
+
         /// <summary>header cookie: api_uid (服务端首访下发, 可空测试)</summary>
         public string HeaderApiUid { get; set; } = "Ck+BXWoZ7cdhwwDbr/q2Ag==";
+
+        // ===== info2 (2af anti-token) 专用字段 (登录类接口) =====
+        /// <summary>SDK_INT (Build.VERSION.SDK_INT)。安卓15=35。</summary>
+        public int SdkInt { get; set; } = 35;
+        /// <summary>ro.build.date.utc (系统构建日期, 秒)。</summary>
+        public long BuildDateUtc { get; set; } = 1759081533;
+        /// <summary>/system/build.prop 修改/创建时间 (秒)。</summary>
+        public long BuildPropTimeUtc { get; set; } = 1230768000;
+        /// <summary>TelephonyManager.getSimOperatorName()。无 SIM 空。</summary>
+        public string SimOperatorName { get; set; } = "";
+        /// <summary>TelephonyManager.getSimCountryIso()。无 SIM 空; 有 SIM 可写死 "cn"。</summary>
+        public string SimCountryIso { get; set; } = "";
+        /// <summary>TelephonyManager.getNetworkType() 文本 (如 "LTE")。无网 "UNKNOWN"。</summary>
+        public string NetworkType { get; set; } = "UNKNOWN";
+        /// <summary>getNetworkOperator() 前 3 位 (MCC, 如 "460")。无 SIM 空。</summary>
+        public string NetworkMcc { get; set; } = "";
+        /// <summary>getNetworkOperator() 后 2~3 位 (MNC, 如 "11")。无 SIM 空。</summary>
+        public string NetworkMnc { get; set; } = "";
+        /// <summary>getNetworkOperatorName() (如 "CHN-CT")。无 SIM 空。</summary>
+        public string NetworkOperatorName { get; set; } = "";
+        /// <summary>getNetworkCountryIso()。无网空; 有网可写死 "cn"。</summary>
+        public string NetworkCountryIso { get; set; } = "";
+        /// <summary>TelephonyManager.getDataState() 数字值。</summary>
+        public int DataState { get; set; } = 0;
+        /// <summary>TelephonyManager.getDataActivity() 数字值。</summary>
+        public int DataActivity { get; set; } = 0;
+        /// <summary>info2 idx=0x1d kernel /proc/version 复合 value (原始字节, 机型级基线)。</summary>
+        public byte[] Info2KernelValue { get; set; } = PddLib.Crypto.Info2Baseline.KernelValue;
 
         // ===== 04 报文 (meta_type=all) 专用 =====
         /// <summary>mediaDrm 的 Widevine deviceUniqueId (32B/64hex), 每台物理设备唯一 → mock 必随机。</summary>

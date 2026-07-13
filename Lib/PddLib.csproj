@@ -6,4 +6,18 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- extra(1008) 数据文件 (KeyTable region + unidbg 快照): 复制到输出, 并随项目引用流转到引用工程输出目录 -->
+    <Content Include="Data\Extra1008\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- data_type=16 proc-maps 路径清单基线 (机型/ROM 相关, 干净样本) -->
+    <Content Include="Data\Type16\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Unicorn2 原生库 (win-x64): 供 UnicornKeystreamGenerator 执行真实 G; 由 Uc 的 DllImport 解析器定位 -->
+    <Content Include="Native\unicorn.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="Portable.BouncyCastle" Version="1.9.0" />
+  </ItemGroup>
+
 </Project>

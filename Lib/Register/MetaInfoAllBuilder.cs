@@ -18,6 +18,16 @@ namespace PddLib.Register
         /// <summary>known_device: 本地已持有 pddid → 1; 全新设备首注册 → 0。</summary>
         public int KnownDevice { get; set; } = 0;
 
+        /// <summary>scene: 04=1 (注册); 06=14 (常规上报)。</summary>
+        public int Scene { get; set; } = 1;
+
+        /// <summary>
+        /// p48 (06 独有, 04 无): 充电状态行, 线格式原值 (原样, 不做 URLEncode)。
+        /// null = 不输出该字段 (04); 非 null = 输出 (06)。
+        /// 格式: CHG|&lt;ts毫秒&gt;|0|false|内置屏幕|null|1
+        /// </summary>
+        public string? P48 { get; set; }
+
         /// <summary>body cookie (上次会话残留); mock 新设备置空; null=取 device.BodyCookie。</summary>
         public string? Cookie { get; set; } = "";
 
@@ -122,8 +132,8 @@ namespace PddLib.Register
 
             F("platform_type", "1");                                  // 0
             F("sharedpreference_id", d.SharedPreferenceId);           // 1
-            F("dpi", MetaInfoAllBaseline.Dpi);                        // 2
-            F("resolution", MetaInfoAllBaseline.Resolution);          // 3
+            F("dpi", d.Dpi.ToString());                              // 2  (机型)
+            F("resolution", d.ResolutionReal);                        // 3  (机型)
             F("mac", "");                                             // 4
             F("uid", "");                                             // 5
             F("cookie", JavaUrlEncode(cookie));                       // 6
@@ -132,7 +142,7 @@ namespace PddLib.Register
             F("cpuinfo", "");                                         // 9
             F("build_id", d.BuildId);                                 // 10
             F("fingerprint", JavaUrlEncode(d.Fingerprint));           // 11
-            F("characteristics", MetaInfoAllBaseline.Characteristics);// 12
+            F("characteristics", d.Characteristics);                  // 12 (机型)
             F("battery_status", JavaUrlEncode(battery));              // 13
             F("boot_time", bootTime.ToString());                      // 14
             F("root", d.Root.ToString());                             // 15
@@ -142,13 +152,13 @@ namespace PddLib.Register
             F("eth_check", d.EthCheck.ToString());                    // 19
             F("p0", "17");                                            // 20
             F("p1", MetaInfoAllBaseline.P1);                          // 21
-            F("p2", MetaInfoAllBaseline.P2);                          // 22
+            F("p2", d.P2);                                            // 22 (机型/随机化 attestation)
             F("p3", MetaInfoAllBaseline.P3);                          // 23
             F("p4", d.P4);                                            // 24
             F("p5", MetaInfoAllBaseline.P5);                          // 25
             F("p6", MetaInfoAllBaseline.P6);                          // 26
             F("p7", d.P7AbnormalApps);                                // 27
-            F("p8", MetaInfoAllBaseline.P8);                          // 28
+            F("p8", d.BootCount.ToString());                         // 28 (系统启动次数)
             F("p9", "");                                              // 29
             F("p10", d.AndroidId);                                    // 30  = android_id
             F("p11", "");                                             // 31
@@ -158,9 +168,9 @@ namespace PddLib.Register
             F("p15", "");                                             // 35
             F("p16", MetaInfoAllBaseline.P16);                        // 36
             F("p17", MetaInfoAllBaseline.P17);                        // 37
-            F("p18", MetaInfoAllBaseline.P18);                        // 38
-            F("p19", MetaInfoAllBaseline.P19);                        // 39
-            F("p20", MetaInfoAllBaseline.P20);                        // 40
+            F("p18", d.TimeZone);                                     // 38 (机型时区)
+            F("p19", d.BatteryCapacityMah + ".0");                    // 39 (电池容量 mAh)
+            F("p20", d.Soc);                                          // 40 (机型 SoC)
             F("p21", "");                                             // 41
             F("p22", d.P22Mac);                                       // 42
             F("p23", MetaInfoAllBaseline.P23);                        // 43
@@ -179,10 +189,10 @@ namespace PddLib.Register
             F("p47", d.P47);                                          // 56
             F("p49", JavaUrlEncode(d.P49));                           // 57
             F("p50", o.P50 ?? MetaInfoAllBaseline.P50);              // 58
-            F("p51", MetaInfoAllBaseline.P51);                        // 59
-            F("p52", MetaInfoAllBaseline.P52);                        // 60
+            F("p51", JavaUrlEncode(d.RingtoneUri));                   // 59 (铃声 URI)
+            F("p52", JavaUrlEncode(d.NotificationUri));               // 60 (通知音 URI)
             F("p53", o.P53 ?? MetaInfoAllBaseline.P53);              // 61
-            F("p57", MetaInfoAllBaseline.P57);                        // 62
+            F("p57", d.ResolutionUsable);                             // 62 (机型可用区)
             F("p65", o.P65 ?? MetaInfoAllBaseline.P65);              // 63
             F("p68", o.P68 ?? MetaInfoAllBaseline.P68);              // 64
             F("p80", "");                                             // 65
@@ -201,11 +211,12 @@ namespace PddLib.Register
             F("clipboard_md5", "");                                   // 78
             F("commitid", MetaInfoAllBaseline.Commitid);              // 79
             F("uuid", d.Uuid);                                        // 80
-            F("scene", "1");                                          // 81
+            F("scene", o.Scene.ToString());                           // 81  (04=1 / 06=14)
             F("meta_type", "all");                                    // 82
             F("p46", d.P46InstallTime.ToString());                    // 83
             F("imei_shown", MetaInfoAllBaseline.ImeiShown);           // 84
             F("instrumentation_chain", MetaInfoAllBaseline.InstrumentationChain); // 85
+            if (o.P48 != null) F("p48", o.P48);                       // 85.5 (06 独有, 原样)
             F("known_device", o.KnownDevice.ToString());              // 86
             F("oaid", d.Oaid);                                        // 87
             F("version", d.Version);                                  // 88

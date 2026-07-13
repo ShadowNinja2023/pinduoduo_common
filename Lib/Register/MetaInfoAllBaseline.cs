@@ -47,7 +47,8 @@ namespace PddLib.Register
         public const string ImeiPermission = @"-1";
         public const string P26Sample = @"[{""issuer"":""C=NZ,ST=Auckland,L=Auckland,O=XK72 Ltd,OU=https:\/\/charlesproxy.com\/ssl,CN=Charles Proxy CA (6 Jun 2025\\, NONOLOL)"",""serialNumber"":""19740fad13f"",""creationDate"":23093538859}]";
 
-        /// <summary>p26 mock 值: 干净设备无用户 CA 证书 → 空 (复刻样本=自曝抓包)。</summary>
-        public const string P26Mock = @"";
+        /// <summary>p26 mock 值: 干净设备无用户 CA 证书 → 空数组 "[]" (2026-07-13 卸证书实测坐实, docs 16 §1.1.1)。
+        /// 注: 之前误用空串 ""; 真机非抓包环境 p26 上报字面空数组 []。</summary>
+        public const string P26Mock = @"[]";
     }
 }
