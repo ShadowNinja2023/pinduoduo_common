@@ -1,5 +1,7 @@
-﻿using System.Net;
+﻿using Newtonsoft.Json;
+using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace PddLib
@@ -19,6 +21,15 @@ namespace PddLib
     /// </summary>
     public class Http
     {
+        /// <summary>
+        /// body 序列化选项: 用宽松编码器, 避免默认 JavaScriptEncoder 把 +、非 ASCII(中文) 等
+        /// 转成 \uXXXX (与真机请求字节级对齐, 如 csr_risk_token 里的 '+')。
+        /// </summary>
+        private static readonly JsonSerializerOptions JsonOpts = new()
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        };
+
         private HttpClient _client;
         private string? _proxyUrl;
         private string? _proxyUsername;
@@ -94,7 +105,7 @@ namespace PddLib
         /// </summary>
         public async Task<HttpResult> PostFullAsync(string url, object body, Dictionary<string, string>? headers = null)
         {
-            var json = JsonSerializer.Serialize(body);
+            var json = JsonConvert.SerializeObject(body);
             return await PostRawAsync(url, json, headers);
         }
 
@@ -110,6 +121,37 @@ namespace PddLib
             };
             request.Content.Headers.Remove("Content-Type");
             request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json;charset=UTF-8");
+
+            if (headers != null)
+            {
+                foreach (var kv in headers)
+                    request.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+            }
+
+            var response = await _client.SendAsync(request);
+            var responseBody = await response.Content.ReadAsStringAsync();
+
+            return new HttpResult
+            {
+                Body = responseBody,
+                Headers = response.Headers,
+                StatusCode = response.StatusCode
+            };
+        }
+
+        /// <summary>
+        /// 发送 GET 请求，返回 body 字符串。
+        /// </summary>
+        public async Task<string> GetAsync(string url, Dictionary<string, string>? headers = null)
+            => (await GetFullAsync(url, headers)).Body;
+
+        /// <summary>
+        /// 发送 GET 请求，返回完整响应（含 headers）。
+        /// 用于打开中转 H5 页 (goods.html 等)，让服务端记录会话内的页面访问。
+        /// </summary>
+        public async Task<HttpResult> GetFullAsync(string url, Dictionary<string, string>? headers = null)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
 
             if (headers != null)
             {

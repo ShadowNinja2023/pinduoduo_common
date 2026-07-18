@@ -246,6 +246,54 @@ namespace PddLib.Register
             return await SendRawAsync(Build04(pddid, st, random32, options));
         }
 
+        /// <summary>
+        /// 登录后账号↔设备绑定上报 (meta_type=all, scene=4, 带 uid)。
+        /// 真机在登录成功后会再发一次 /project/meta_info?pdduid={uid}, 明文含 uid + pddid,
+        /// 把账号绑定到设备。缺这一步 → 服务端视为"账号+未绑定设备"→ 业务接口(如 render)降级(售罄)。
+        /// 见 examples/compare/render/meta_after_signin_decrypted.txt。
+        /// </summary>
+        public HttpRequestMessage BuildSigninMeta(string pddid, long uid, string accessToken,
+            long? st = null, byte[]? random32 = null)
+        {
+            long stMs = st ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_device.IsMock)
+                _device.RecomputeUserEnv2(stMs, form: DeviceProfile.UserEnv2Form.Report04);
+
+            Meta04Options opt = BuildMock04Options(pddid, stMs);
+            opt.Scene = 4;                     // 登录场景
+            opt.KnownDevice = 1;               // 已注册设备
+            opt.Uid = uid.ToString();          // ★ 绑定账号 uid
+
+            string body = BuildBody04(opt, random32);
+
+            // pdduid 用登录 uid (注册期的 04 是空 pdduid)
+            var req = new HttpRequestMessage(HttpMethod.Post, $"{ApiBase}/project/meta_info?pdduid={uid}")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+            req.Content.Headers.Remove("Content-Type");
+            req.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json;charset=UTF-8");
+
+            // 头集同 04 (x-p1 ul=/project/meta_info, et=pddid); 追加登录态 accesstoken, x-p-t 切登录形态
+            foreach (var (k, v) in BuildHeaders(stMs, bd: body, et: pddid))
+            {
+                if (k == "x-p-t") continue;    // 用登录形态覆盖
+                req.Headers.TryAddWithoutValidation(k, v);
+            }
+            req.Headers.TryAddWithoutValidation("x-p-t", "t=1&x-p1-t=0");
+            if (!string.IsNullOrEmpty(accessToken))
+                req.Headers.TryAddWithoutValidation("accesstoken", accessToken);
+
+            return req;
+        }
+
+        /// <summary>发送登录后账号↔设备绑定上报。</summary>
+        public async Task<RegisterResponse> SendSigninMetaAsync(string pddid, long uid, string accessToken,
+            long? st = null, byte[]? random32 = null)
+        {
+            return await SendRawAsync(BuildSigninMeta(pddid, uid, accessToken, st, random32));
+        }
+
         // ==================== 06 报文 (meta_info / meta_type=all / scene=14) ====================
 
         /// <summary>06 user_env2 内嵌 extra 字段 ("01"+base64); null=复刻样本基线。

@@ -18,7 +18,10 @@ namespace PddLib.Register
         /// <summary>known_device: 本地已持有 pddid → 1; 全新设备首注册 → 0。</summary>
         public int KnownDevice { get; set; } = 0;
 
-        /// <summary>scene: 04=1 (注册); 06=14 (常规上报)。</summary>
+        /// <summary>uid: 登录账号 uid (登录后绑定上报 scene=4 才填; 注册期空)。</summary>
+        public string? Uid { get; set; }
+
+        /// <summary>scene: 04=1 (注册); 06=14 (常规上报); 登录后绑定=4。</summary>
         public int Scene { get; set; } = 1;
 
         /// <summary>
@@ -135,7 +138,7 @@ namespace PddLib.Register
             F("dpi", d.Dpi.ToString());                              // 2  (机型)
             F("resolution", d.ResolutionReal);                        // 3  (机型)
             F("mac", "");                                             // 4
-            F("uid", "");                                             // 5
+            F("uid", o.Uid ?? "");                                    // 5  (登录后绑定=账号uid; 注册期空)
             F("cookie", JavaUrlEncode(cookie));                       // 6
             F("android_id", d.AndroidId);                             // 7
             F("sno", d.Sno);                                          // 8

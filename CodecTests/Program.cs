@@ -305,5 +305,26 @@ Console.WriteLine("\n==== type21 info (SecureNative.atn, RC4 keystream + XOR + b
     Check("Info08Baseline 证书链 5 张", Info08Baseline.CertChain.Length == 5, Info08Baseline.CertChain.Length.ToString());
 }
 
+Console.WriteLine("\n==== info2 kernel(/proc/version) 随设备派生 (Info2Baseline.FromUname) ====");
+{
+    // 1) 基线 uname → 基线 KernelValue (逐字节 round-trip)
+    const string baseUname = "Linux localhost 6.6.89-android15-8-g14220ae4ce65-ab13680582-4k #1 SMP PREEMPT Mon Jun 23 07:30:57 UTC 2025 aarch64 Toybox";
+    Check("FromUname(基线uname) == 基线 KernelValue",
+        Convert.ToBase64String(Info2Baseline.FromUname(baseUname)) == Info2Baseline.KernelValueB64);
+
+    // 2) 不同设备 uname → 不同 KernelValue, 且含设备 release + 日期
+    const string devUname = "Linux localhost 6.1.75-android14-11-g1234567890ab-ab12345678 #1 SMP PREEMPT_DYNAMIC Fri Sep 20 08:15:42 UTC 2024 aarch64 Toybox";
+    byte[] kvDev = Info2Baseline.FromUname(devUname);
+    string kvDevStr = Encoding.UTF8.GetString(kvDev, 1, kvDev.Length - 1);
+    Check("异设备 KernelValue != 基线", Convert.ToBase64String(kvDev) != Info2Baseline.KernelValueB64);
+    Check("KernelValue 含设备 release", kvDevStr.StartsWith("6.1.75-android14-11-g1234567890ab-ab12345678"));
+    Check("KernelValue 含设备日期(去SMP/PREEMPT/空格)", kvDevStr.EndsWith("#1FriSep2008:15:42UTC2024"), kvDevStr.Substring(Math.Max(0, kvDevStr.Length - 26)));
+    Check("KernelValue 首字节 0x0a", kvDev[0] == 0x0a);
+
+    // 3) 解析失败/空 → 回落基线
+    Check("空 uname 回落基线", Convert.ToBase64String(Info2Baseline.FromUname(null)) == Info2Baseline.KernelValueB64);
+    Check("非法 uname 回落基线", Convert.ToBase64String(Info2Baseline.FromUname("garbage no linux")) == Info2Baseline.KernelValueB64);
+}
+
 Console.WriteLine($"\n==== 汇总: PASS={pass}  FAIL={fail} ====");
 return fail == 0 ? 0 : 1;

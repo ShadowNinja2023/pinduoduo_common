@@ -155,8 +155,12 @@ namespace PddLib.Register
                 // p4 是 {"2": uname} 且做 JavaUrlEncode 前的原文 (空格→+ 由 Builder 处理? p4 是原样字段)
                 d.P4 = "{\"2\":\"" + uname!.Replace(" ", "+").Replace(":", "%3A").Replace("#", "%23") + "\"}";
                 rep.Map("P4(uname)", "c478:6c6d", uname!);
+                // info2 idx=0x1d kernel(/proc/version) 由同一 uname 派生 (release+日期随设备,
+                // 与 p4 内核版本一致; 中段工具链保持模板)。解析失败回落基线。
+                d.Info2KernelValue = PddLib.Crypto.Info2Baseline.FromUname(uname!);
+                rep.Map("Info2KernelValue(/proc/version←uname)", "c478:6c6d", "release+日期随设备");
             }
-            else rep.Default("P4(uname)", "无 c478:6c6d, 保留基线");
+            else rep.Default("P4(uname)/Info2KernelValue", "无 c478:6c6d, 保留基线");
 
             // ===== 电池 (91d5 JSON → 覆盖基线 kv 的 level/temperature/voltage) =====
             TryFillBattery(d, r.Get("91d5", "cecf"), rep);
