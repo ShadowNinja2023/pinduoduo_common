@@ -102,6 +102,16 @@ namespace PddLib.Register
         /// <summary>p47: 会话 UUID, 先于 pddid 存在 (本地生成/持久化), 同时是 x-p1 明文头与 RC4 key 来源</summary>
         public string P47 { get; set; } = "S5n3Bd6L-ofNf-Zv3q-402e-4yHlPVhy5foo";
 
+        // ===== 日志流 user_trace/sensor 用的设备身份 (真机 te.gif/t.gif 上报, 服务端疑与注册指纹交叉核对) =====
+        /// <summary>本次开机的 boot_id (UUID)。每次真机重启变化, mock 一次会话内固定。</summary>
+        public string BootId { get; set; } = "e5dcaec3-ce45-4a00-a0be-30f1e39b7237";
+        /// <summary>机型营销名 (ro.config.marketing_name 等), user_trace.model_name。默认 Lenovo Y700。</summary>
+        public string ModelName { get; set; } = "拯救者平板 Y700";
+        /// <summary>ROM 版本 (ro.build.display.id 类), user_trace.rom_version / rom_build_id (真机两者同值)。</summary>
+        public string RomVersion { get; set; } = "TB322FC_CN_OPEN_USER_Q00041.1_V_ZUXOS_1.1.11.202_ST_250919";
+        /// <summary>titan 安装 id (UUID), install/user_trace 事件共用。</summary>
+        public string TitanInstallId { get; set; } = "2c16b3ef-de93-477f-9d22-c949bdb3cb40";
+
         // ===== header 用 (从 fingerprint 派生) =====
         public string Brand { get; set; } = "Lenovo";
         public string Model { get; set; } = "TB322FC";

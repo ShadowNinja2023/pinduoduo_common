@@ -28,29 +28,20 @@ namespace PddLib.Crypto
         };
 
         /// <summary>
-        /// 自定义IV1（第1轮哈希使用，小端字节序）
-        /// 对应uint值: [0x8FF580D7, 0x0DE03D94, 0x893B5804, 0x17C0980F,
-        ///             0x5B2A4684, 0x4ED07AAA, 0xA2042F7B, 0x0AB824FA]
+        /// 第1轮哈希 IV (10 个 dword: 8 state + 2 附加, 来自 sub_12BD04 mode=1)。
+        /// 前 8 个是初始 state, [8]/[9] 参与压缩前的 state shuffle。字节级验证。
         /// </summary>
-        private static readonly byte[] IV1_BYTES = new byte[]
-        {
-            0xD7, 0x80, 0xF5, 0x8F, 0x94, 0x3D, 0xE0, 0x0D,
-            0x04, 0x58, 0x3B, 0x89, 0x0F, 0x98, 0xC0, 0x17,
-            0x84, 0x46, 0x2A, 0x5B, 0xAA, 0x7A, 0xD0, 0x4E,
-            0x7B, 0x2F, 0x04, 0xA2, 0xFA, 0x24, 0xB8, 0x0A
+        private static readonly uint[] IV1 = {
+            0xc7e9f9cf, 0x2471d5a9, 0x85cc7ac3, 0xc95afe6e,
+            0xd64339aa, 0x9e0806ba, 0x3e213b45, 0xa818299d,
+            0x12c2c280, 0x226a8864
         };
 
-        /// <summary>
-        /// 自定义IV2（第2轮哈希使用，小端字节序）
-        /// 对应uint值: [0x2FA5793A, 0x8121E75E, 0x5BFC9F6A, 0x41EBF1BB,
-        ///             0x2B478621, 0x83AD6FF6, 0x0ABE0279, 0x3CA23BF9]
-        /// </summary>
-        private static readonly byte[] IV2_BYTES = new byte[]
-        {
-            0x3A, 0x79, 0xA5, 0x2F, 0x5E, 0xE7, 0x21, 0x81,
-            0x6A, 0x9F, 0xFC, 0x5B, 0xBB, 0xF1, 0xEB, 0x41,
-            0x21, 0x86, 0x47, 0x2B, 0xF6, 0x6F, 0xAD, 0x83,
-            0x79, 0x02, 0xBE, 0x0A, 0xF9, 0x3B, 0xA2, 0x3C
+        /// <summary>第2轮哈希 IV (10 dword, 来自 sub_12BD04 mode=2)。</summary>
+        private static readonly uint[] IV2 = {
+            0x5103d887, 0xf6580e91, 0x7aced7da, 0xcf4be428,
+            0x748f7ebb, 0xf84144a7, 0x6645f081, 0x1a3c2ca5,
+            0xa937dfca, 0x85e1bca0
         };
 
         #endregion
@@ -161,90 +152,56 @@ namespace PddLib.Crypto
         }
 
         /// <summary>
-        /// 单次自定义SHA-256哈希
+        /// 单次魔改 SHA-256 哈希 (字节级对齐 libpdd_secure)。
+        /// 魔改点: 1) 10-dword IV; 2) 压缩前用 [8]/[9] 做 state shuffle; 3) bit counter 初始 0x200。
         /// </summary>
         /// <param name="data">输入数据</param>
-        /// <param name="ivBytes">初始向量（32字节，小端格式）</param>
+        /// <param name="iv">初始向量 (10 个 uint)</param>
         /// <returns>32字节哈希值</returns>
-        private static byte[] CustomSHA256Hash(byte[] data, byte[] ivBytes)
+        private static byte[] CustomSHA256Hash(byte[] data, uint[] iv)
         {
-            // 从小端字节解析IV到uint数组
-            uint[] state = new uint[8];
-            for (int i = 0; i < 8; i++)
-            {
-                int pos = i * 4;
-                state[i] = ((uint)ivBytes[pos]) |
-                          ((uint)ivBytes[pos + 1] << 8) |
-                          ((uint)ivBytes[pos + 2] << 16) |
-                          ((uint)ivBytes[pos + 3] << 24);
-            }
+            uint[] state = new uint[10];
+            Array.Copy(iv, state, 10);
 
-            // ⚠️ 关键修改：长度字段 = (实际长度 + 64) * 8
-            // 标准SHA-256使用: len(data) * 8
-            // 自定义算法使用: (len(data) + 64) * 8
-            ulong messageLengthBits = (ulong)(data.Length + 64) * 8;
+            // 压缩前 state shuffle (sub_12AE08 开头): 用附加的 [8]/[9] 混入
+            uint s0 = state[0], s1 = state[1], s2 = state[2], s3 = state[3];
+            uint s4 = state[4], s5 = state[5], s6 = state[6];
+            uint s8 = state[8], s9 = state[9];
+            state[7] = s6;
+            state[6] = s5;
+            state[5] = s4;
+            state[4] = s8 + s3;
+            state[3] = s2;
+            state[2] = s1;
+            state[1] = s0;
+            state[0] = s9 + s8;
 
-            // SHA-256 Padding
+            // bit counter 初始 0x200 (= 64*8), 等价长度字段 = (len+64)*8
+            long bitLen = 0x200L + (long)data.Length * 8;
+
             int originalLength = data.Length;
             int paddingLength = (64 - ((originalLength + 9) % 64)) % 64;
             int totalLength = originalLength + 1 + paddingLength + 8;
 
             byte[] paddedData = new byte[totalLength];
-
-            // 复制原始数据
             Array.Copy(data, 0, paddedData, 0, originalLength);
-
-            // 添加0x80
             paddedData[originalLength] = 0x80;
-
-            // 填充0（paddingLength个字节默认为0）
-
-            // 添加长度字段（大端序，最后8字节）
             for (int i = 0; i < 8; i++)
-            {
-                paddedData[totalLength - 1 - i] = (byte)(messageLengthBits >> (i * 8));
-            }
+                paddedData[totalLength - 1 - i] = (byte)(bitLen >> (i * 8));
 
-            // 处理所有64字节块
             for (int i = 0; i < totalLength; i += 64)
-            {
                 SHA256Transform(state, paddedData, i);
-            }
 
-            // 输出转换：模拟ARM小端存储后的大端输出
-            // 步骤1: 将state按小端格式存入"内存"
-            byte[] memory = new byte[32];
-            for (int i = 0; i < 8; i++)
-            {
-                int pos = i * 4;
-                memory[pos] = (byte)(state[i]);
-                memory[pos + 1] = (byte)(state[i] >> 8);
-                memory[pos + 2] = (byte)(state[i] >> 16);
-                memory[pos + 3] = (byte)(state[i] >> 24);
-            }
-
-            // 步骤2: 按小端格式读回
-            uint[] stateReloaded = new uint[8];
-            for (int i = 0; i < 8; i++)
-            {
-                int pos = i * 4;
-                stateReloaded[i] = ((uint)memory[pos]) |
-                                  ((uint)memory[pos + 1] << 8) |
-                                  ((uint)memory[pos + 2] << 16) |
-                                  ((uint)memory[pos + 3] << 24);
-            }
-
-            // 步骤3: 按大端格式输出
+            // 大端输出 state[0..7]
             byte[] output = new byte[32];
             for (int i = 0; i < 8; i++)
             {
                 int pos = i * 4;
-                output[pos] = (byte)(stateReloaded[i] >> 24);
-                output[pos + 1] = (byte)(stateReloaded[i] >> 16);
-                output[pos + 2] = (byte)(stateReloaded[i] >> 8);
-                output[pos + 3] = (byte)(stateReloaded[i]);
+                output[pos] = (byte)(state[i] >> 24);
+                output[pos + 1] = (byte)(state[i] >> 16);
+                output[pos + 2] = (byte)(state[i] >> 8);
+                output[pos + 3] = (byte)(state[i]);
             }
-
             return output;
         }
 
@@ -259,7 +216,7 @@ namespace PddLib.Crypto
         /// <returns>32字节哈希值</returns>
         public static byte[] HashOnce(byte[] data)
         {
-            return CustomSHA256Hash(data, IV1_BYTES);
+            return CustomSHA256Hash(data, IV1);
         }
 
         /// <summary>
@@ -281,8 +238,8 @@ namespace PddLib.Crypto
         /// <returns>32字节哈希值</returns>
         public static byte[] DoubleHash(byte[] data)
         {
-            byte[] firstHash = CustomSHA256Hash(data, IV1_BYTES);
-            byte[] secondHash = CustomSHA256Hash(firstHash, IV2_BYTES);
+            byte[] firstHash = CustomSHA256Hash(data, IV1);
+            byte[] secondHash = CustomSHA256Hash(firstHash, IV2);
             return secondHash;
         }
 

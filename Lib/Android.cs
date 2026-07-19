@@ -67,6 +67,12 @@ namespace PddLib
         /// <summary>服务端下发的 pdd_id (01 返回)。</summary>
         public string Pddid { get; private set; } = string.Empty;
 
+        /// <summary>行为日志埋点上报器 (t.gif)。注册/登录前后自动补发行为事件以积累设备信誉 (养号)。</summary>
+        public PddLib.Logging.EventLogger Logger { get; private set; } = null!;
+
+        /// <summary>是否在注册/登录前后自动补发行为埋点 (养号)。默认 true; 纯注册测试可关。</summary>
+        public bool AutoReportEvents { get; set; } = true;
+
         /// <summary>
         /// 登录 body 序列化选项: 宽松编码器, 避免默认 JavaScriptEncoder 把 +、非 ASCII 等转成 \uXXXX
         /// (与真机字节级对齐; 同一份字符串既发送又作 x-p1 的 bd 入参, 保证自签名自洽)。
@@ -80,6 +86,8 @@ namespace PddLib
         private const string AppVersion = "8.8.0";
         private const string AppBuildHash = "24f4a9fb4f113b97ad7e6958d27ee140996d17a7";
         private string verifyAuthToken = string.Empty;
+        /// <summary>最近一次 render 成功解密出的商品明文 JSON (encrypt_info 解密结果; 含真实价格/sku 等)。</summary>
+        public string? LastGoodsDetail { get; private set; }
 
         private readonly string? _proxyUrl;
 
@@ -118,6 +126,9 @@ namespace PddLib
             Http = new Http(proxyUrl, proxyUsername, proxyPassword, Cookies);
             _proxyUrl = proxyUrl;
             SmsCodeProvider = smsCodeProvider;
+            // 行为埋点上报器: 共用 Device/Http(含 CookieContainer, 自动带 api_uid)。pddid/uin/userId 随注册·登录进度更新。
+            // appVersion=8.8.0 (与 RegisterClient 一致); proxyUrl 传入使 /d4 HTTPDNS 解析也走同一抓包代理。
+            Logger = new PddLib.Logging.EventLogger(device, Http, appVersion: AppVersion, proxyUrl: proxyUrl);
         }
 
         /// <summary>
@@ -135,6 +146,25 @@ namespace PddLib
             var tao = await api.GetRandomTaobaoDeviceAsync();
             var device = DeviceMocker.NewDeviceFromTaobao(tao, out _);
 
+            var android = new Android(device, proxyUrl, proxyUsername, proxyPassword, smsCodeProvider);
+            if (!await android.RegisterDevice())
+                throw new Exception("注册设备失败: 01 未取得 pdd_id");
+            return android;
+        }
+
+        /// <summary>
+        /// 创建并注册一台<b>最小 mock</b>设备: 以真实干净基线 (FromSample01, 与可信真机 WqfIGg5r
+        /// 同机型指纹) 为底, <b>只改硬唯一标识</b> (见 <see cref="DeviceMocker.MinimalMock"/>) 让服务端
+        /// 下发新 pddid, 其余字段保持基线真机值。
+        ///
+        /// 用途: 以"最小改动面"验证设备信誉/硬风控 —— 不取淘宝库设备 (那会引入大量异设备字段),
+        /// 只在一台已知干净真机上换硬标识, 若 render 仍售罄则强力指向"设备过新"而非字段破绽。
+        /// </summary>
+        public static async Task<Android> CreateMinimalAsync(
+            string? proxyUrl = null, string? proxyUsername = null, string? proxyPassword = null,
+            SmsCodeHandler? smsCodeProvider = null)
+        {
+            var device = DeviceMocker.MinimalNewDevice();
             var android = new Android(device, proxyUrl, proxyUsername, proxyPassword, smsCodeProvider);
             if (!await android.RegisterDevice())
                 throw new Exception("注册设备失败: 01 未取得 pdd_id");
@@ -165,6 +195,11 @@ namespace PddLib
             await TrySend(() => Register.Send06Async(Pddid));
             await TrySend(() => Register.Send07Async(Pddid));  // data_type=15 es (Type15Builder 动态生成)
             await TrySend(() => Register.Send08Async(Pddid));
+
+            // ★ 设备注册后: 补发"初次打开 app"启动行为埋点 (user_trace/permission_check/app_start/install)。
+            Logger.Pddid = Pddid;
+            if (AutoReportEvents)
+                try { await ReportStartupEventsAsync(); } catch { /* 埋点失败不阻断 */ }
 
             return true;
         }
@@ -427,8 +462,12 @@ namespace PddLib
         /// 获取商品详情 (integration/render), 返回完整 HTTP 结果。
         /// <paramref name="antiToken"/> 可切换测试: 真机 render 用 Info4(2ag); 排查风控时可传 Info2/None 对照。
         /// </summary>
-        public async Task<HttpResult> GetItemDetailFullAsync(string goodsId, AntiTokenKind antiToken = AntiTokenKind.Info4)
+        public async Task<HttpResult> GetItemDetailFullAsync(string goodsId, AntiTokenKind antiToken = AntiTokenKind.Info4, string _oak_gallery_token = "", string _oak_rcto = "", string _oak_gallery = "")
         {
+            // ★ render 前补发"首页点击商品→进商详"行为埋点 (click→epv/leave→pv/page_show→商详 impr)。
+            if (AutoReportEvents)
+                try { await ReportClickGoodsEventsAsync(goodsId); } catch { /* 埋点失败不阻断 */ }
+
             var url = $"{ApiBase}/api/oak/integration/render?pdduid={Session.Uid}";
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -448,9 +487,9 @@ namespace PddLib
                 ["pic_h"] = 0,
                 ["has_pic_url"] = 1,
                 ["extend_map"] = new Dictionary<string, object>() { },
-                ["_oak_gallery_token"] = "",
-                ["_oak_gallery"] = "",
-                ["_oak_rcto"] = "",
+                ["_oak_gallery_token"] = _oak_gallery_token,
+                ["_oak_gallery"] = _oak_gallery,
+                ["_oak_rcto"] = _oak_rcto,
 
                 ["union_pay_installed"] = false,
                 ["client_lab"] = new Dictionary<string, string> { ["mall_h5_url_preload_enable"] = "1" },
@@ -469,9 +508,12 @@ namespace PddLib
 
             if (resultJson["redirect_url"] != null)
             {
-                // ★ 原生 render 返回 redirect_url 是正常两段式流程 (非失败): 服务端在此 URL 里
-                //   现签发本次会话的风控归因 token (_oak_rcto / _oak_gallery_token, 响应头 collect-oak-rcto:1)。
-                //   H5 render 必须把这些 token 原样带回, 否则服务端判无有效曝光来源 → 硬风控。
+                // ★ 原生 render 返回 redirect_url = 正常两段式流程。
+                //   ★★ 关键结论(2026-07-20 突破): render 是否出价的闸门 = "合法浏览路径上下文"。
+                //   必须先请求真实首页列表(GetHomePageItemsAsync)让服务端认可浏览路径, 再用首页某商品
+                //   link_url 里的 _oak_rcto/_oak_gallery_token/_oak_gallery 调 render → 通过(即使换 goodsId)。
+                //   传空 oak 参数 → 售罄降级。见 GetItemDetailViaHomeAsync。
+                //   (此前"rcto 无影响"的观察是因当时压根没有合法 oak 参数, 结论已修正。)
                 string redirectPath = resultJson["redirect_url"]!.ToString();   // "goods.html?...&_oak_rcto=..."
                 var redirectUrl = $"https://m.pinduoduo.net/{redirectPath}";
 
@@ -482,7 +524,34 @@ namespace PddLib
                 Http.handler.CookieContainer.Add(new Uri("https://m.pinduoduo.net"), new System.Net.Cookie("pdd_user_uin", this.Session.Uin.ToString()));
                 Http.handler.CookieContainer.Add(new Uri("https://m.pinduoduo.net"), new System.Net.Cookie("install_token", this.Device.InstallToken));
 
-                var get = await Http.GetFullAsync(redirectUrl);
+                // ★ 中转 goods.html GET 头部对齐真机 (之前只发 Host/Cookie, 差距大):
+                //   WebView UA(Mobile) + x-pdd-queries + p-uno-context + ab/p-mode 系列。
+                string webUa =
+                    $"android Mozilla/5.0 (Linux; Android {Device.Osv}; {Device.Model} Build/{Device.BuildId}; wv) " +
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/127.0.6533.103 Mobile Safari/537.36  " +
+                    $"phh_android_version/{AppVersion} phh_android_build/{AppBuildHash} phh_android_channel/gw pversion/0";
+                string h5Queries =
+                    $"width={Device.ScreenWidth}&height={Device.ScreenHeight}&net=1&brand={Device.Brand}" +
+                    $"&model={Device.Model}&osv={Device.Osv}&appv={AppVersion}&pl=2";
+                var goodsHtmlHeaders = new Dictionary<string, string>
+                {
+                    ["p-uno-context"] = "{\"immerse\":1,\"nh\":84.90909194946289,\"sh\":38.90909194946289,\"ls\":0,\"is-low-end\":0,\"ipv6-only\":0}",
+                    ["x-pdd-queries"] = h5Queries,
+                    ["ab-garden-home-js-split"] = "true",
+                    ["accept-language"] = "zh-Hans-CN",
+                    ["user-agent"] = webUa,
+                    ["p-mode"] = "1",
+                    ["ab-enable-split-require"] = "1",
+                    ["fruit-spine-permanent-test"] = "false",
+                    ["x-yak-llt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(),
+                    ["multi-set"] = "1,0,100000551",
+                    ["accept-encoding"] = "gzip",
+                };
+                var get = await Http.GetFullAsync(redirectUrl, goodsHtmlHeaders);
+
+                // ★ te.gif 传感器加密上报 (真机 render 中途: 原生 render→goods.html 后, H5 render 前发一次)
+                if (AutoReportEvents)
+                    try { await Logger.ReportSensorAsync(); } catch { }
 
                 var rp = ParseQuery(redirectPath);
                 string Rp(string k, string dflt = "") => rp.TryGetValue(k, out var v) && v.Length > 0 ? v : dflt;
@@ -504,11 +573,11 @@ namespace PddLib
 
                     ["page_sn"] = 10014,
                     ["page_id"] = $"10014_{now}_{Utils.GetRandomChars(10).ToLower()}",
-                    ["_oak_gallery"] = "",
+                    ["_oak_gallery"] = _oak_gallery,
                     ["_oc_from_redirect"] = "1",
 
-                    ["_oak_rcto"] = "",
-                    ["_oak_gallery_token"] = "",
+                    ["_oak_rcto"] = _oak_rcto,
+                    ["_oak_gallery_token"] = _oak_gallery_token,
 
                     ["anti_content"] = await GetAntiContentAsync(),
 
@@ -529,7 +598,7 @@ namespace PddLib
 
                 var extra = new Dictionary<string, string>()
                 {
-                    ["p-mode"] = "",
+                    ["p-mode"] = "1",
                     ["multi-set"] = "1,1,100000824",
                     ["x-yak-llt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(),
                     ["accept"] = "application/json, text/plain, */*",
@@ -542,6 +611,28 @@ namespace PddLib
                 if (resultJson["verify_auth_token"] != null)
                 {
                     this.verifyAuthToken = resultJson["verify_auth_token"].ToString();
+                    throw new Exception("获取商品详情 - 出现验证码拦截");
+
+                }else if (resultJson["encrypt_info"] != null)
+                {
+                    // ★ 成功拿到商品信息: encrypt_status=3 时 encrypt_info = AES-256-CBC/Pkcs7(商品明文 JSON),
+                    //   key/iv = 本次 render 所用 csr 的 rawKey/rawIV (客户端自留)。解出真实价格/sku 等。
+                    string encInfo = resultJson["encrypt_info"]!.ToString();
+                    try
+                    {
+                        string? decrypted = await DecryptH5EncryptInfoAsync(encInfo, csr.RawKey, csr.RawIV);
+                        if (!string.IsNullOrEmpty(decrypted))
+                        {
+                            LastGoodsDetail = decrypted;
+                            // 把解密明文并回响应, 便于调用方直接读取 (原 encrypt_info 保留)
+                            try { resultJson["decrypt_info"] = JsonConvert.DeserializeObject<JToken>(decrypted); }
+                            catch { resultJson["decrypt_info"] = decrypted; }
+                            result.Body = resultJson.ToString();
+                            Log.Info($"[render] encrypt_info 解密成功, 商品明文 {decrypted.Length}B");
+                        }
+                        else Log.Info("[render] encrypt_info 解密返回空");
+                    }
+                    catch (Exception ex) { Log.Info($"[render] encrypt_info 解密失败: {ex.Message}"); }
                 }
 
             }
@@ -553,6 +644,39 @@ namespace PddLib
         /// <summary>获取商品详情, 仅返回 body 字符串。</summary>
         public async Task<string> GetItemDetailAsync(string goodsId, AntiTokenKind antiToken = AntiTokenKind.Info4)
             => (await GetItemDetailFullAsync(goodsId, antiToken)).Body;
+
+        /// <summary>
+        /// ★ 制胜流程 (2026-07-20 突破): 先请求真实首页列表建立合法浏览路径, 取首页某商品 link_url 里的
+        /// _oak_rcto/_oak_gallery_token/_oak_gallery, 再调 render → 出价 (不再售罄降级)。
+        /// 服务端 render 闸门看的是"是否有合法首页浏览路径 + 有效 oak 参数", 而非单纯设备信誉。
+        /// 复用真实首页商品的 oak 参数后, 即使 <paramref name="goodsId"/> 换成其它商品也能通过。
+        /// </summary>
+        /// <param name="goodsId">目标商品 id; null 则用首页所取商品自身的 goods_id。</param>
+        /// <param name="homeItemIndex">用首页 goods_list 第几个商品的 oak 参数 (默认 0)。</param>
+        public async Task<HttpResult> GetItemDetailViaHomeAsync(string? goodsId = null, int homeItemIndex = 0)
+        {
+            var home = await GetHomePageItemsAsync();
+            var homeJson = JsonConvert.DeserializeObject<JObject>(home.Body);
+            var list = homeJson?["data"]?["goods_list"] as JArray;
+            if (list == null || list.Count == 0)
+                throw new InvalidOperationException($"首页列表为空, 无法取 oak 参数 (HTTP {(int)home.StatusCode})");
+
+            int idx = Math.Clamp(homeItemIndex, 0, list.Count - 1);
+            var item = list[idx];
+            string linkUrl = item?["data"]?["link_url"]?.ToString() ?? "";
+            var q = ParseQuery(linkUrl);
+            string galleryToken = q.TryGetValue("_oak_gallery_token", out var gt) ? gt : "";
+            string rcto = q.TryGetValue("_oak_rcto", out var rc) ? rc : "";
+            string gallery = q.TryGetValue("_oak_gallery", out var g) ? Uri.UnescapeDataString(g) : "";
+
+            string targetGoods = goodsId ?? item?["data"]?["goods_id"]?.ToString()
+                ?? q.GetValueOrDefault("goods_id", "");
+            if (string.IsNullOrEmpty(targetGoods))
+                throw new InvalidOperationException("无法确定 goods_id");
+
+            Log.Info($"[render via home] item[{idx}] oak_rcto={(rcto.Length > 0 ? "有" : "空")} gallery_token={(galleryToken.Length > 0 ? "有" : "空")} → goods={targetGoods}");
+            return await GetItemDetailFullAsync(targetGoods, AntiTokenKind.Info4, galleryToken, rcto, gallery);
+        }
 
         // ==================== 搜索 (/search) ====================
 
@@ -601,6 +725,15 @@ namespace PddLib
         /// <summary>关键词搜索, 仅返回 body 字符串。</summary>
         public async Task<string> SearchAsync(string keyword, int page = 1, int size = 20)
             => (await SearchFullAsync(keyword, page, size)).Body;
+
+        public async Task<HttpResult> GetHomePageItemsAsync()
+        {
+            var url = $"{ApiBase}/api/alexa/cells/hub/v3?req_list_action_type=8&page_sn=10002&page_id=index_list.html&offset=0&list_id=06296172&count=20&top_type=0&engine_version=3.0&req_action_type=8&platform=2&is_sys_minor=0&launch_type=0&pdduid={Session.Uid}";
+
+            var result = await Http.GetFullAsync(url, await BuildHeaders());
+
+            return result;
+        }
 
         private const string Base62Chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
         /// <summary>生成 n 位 base62 随机串 (用于 list_id 等不透明客户端 id)。</summary>
@@ -798,6 +931,13 @@ namespace PddLib
             //   真机登录后 + 之后定时都会发; 缺这步 → 服务端视为"账号+未绑定设备"→ render 等业务降级(售罄)。
             await ReportMetaInfoAsync();
 
+            // ★ 登录后: 回填埋点身份 (uin/user_id) 并补发"首页浏览"行为埋点 (pv/impr/click/epv + ab_trigger)。
+            Logger.Pddid = Pddid;
+            Logger.UserId = Session.Uid.ToString();
+            Logger.Uin = Session.Uin ?? string.Empty;
+            if (AutoReportEvents)
+                try { await ReportHomeBrowseEventsAsync(); } catch { /* 埋点失败不阻断 */ }
+
             return new LoginResult
             {
                 Success = true,
@@ -832,6 +972,124 @@ namespace PddLib
                 Log.Info("[meta 上报] 失败(不阻断): " + ex.Message);
                 return false;
             }
+        }
+
+        // ==================== 行为埋点序列 (养号) ====================
+
+        /// <summary>把 Android 当前的 pddid/uin/user_id 同步给埋点上报器 (确保 etag 等正确, 兼容 new/LoadState 各路径)。</summary>
+        private void SyncLogger()
+        {
+            Logger.Pddid = Pddid ?? string.Empty;
+            if (Session != null)
+            {
+                if (Session.Uid != 0) Logger.UserId = Session.Uid.ToString();
+                if (!string.IsNullOrEmpty(Session.Uin)) Logger.Uin = Session.Uin;
+            }
+        }
+
+        /// <summary>
+        /// 注册后补发"初次打开 app"启动行为埋点 (对应真机 §11 会话开头):
+        /// user_trace(前台/后台) → permission_check → app_start → install(titan)。
+        /// 见 docs/06_behavior_log/01_event_stream_analysis.md。
+        /// </summary>
+        public async Task ReportStartupEventsAsync()
+        {
+            SyncLogger();
+            string bootMs = (Device.BootTime * 1000L).ToString();
+            string install = Device.P46InstallTime.ToString();
+            string osv = "Android" + (Device.Osv ?? "15");
+
+            // user_trace 7/8: 带完整设备身份块 (oaid/android_id/uuid/boot_id/rom_version/model_name…)
+            await Logger.UserTraceAsync(7, newInstall: true);
+            await Logger.UserTraceAsync(8, newInstall: true);
+            await Logger.EventAsync("permission_check",
+                ("notification_enable", "2"), ("camera", "2"), ("access_fine_location", "2"),
+                ("access_coarse_location", "2"), ("read_media_images", "2"), ("read_media_video", "2"),
+                ("read_media_audio", "2"), ("read_phone_state", "2"), ("read_contacts", "2"),
+                ("write_calendar", "2"), ("write_external_storage", "2"), ("float_enable", "2"),
+                ("lock_enable", "3"), ("resident_notification", "1"), ("rom_version", Device.RomVersion));
+            await Logger.EventAsync("app_start",
+                ("boot_time", bootMs), ("resume_time", bootMs), ("install_time", install),
+                ("update_time", install), ("source_application", "com.zui.launcher"), ("page_name", ""),
+                ("source_bounds", "1520,1183,1925,1527"));
+            await Logger.ReportAsync("event", "install", "titan", new System.Collections.Generic.List<(string, string)>
+            {
+                ("titan_install_id", Device.TitanInstallId), ("install_type", "1"),
+                ("pull_up_time", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()),
+                ("system_version", osv), ("channel", "gw"), ("oaid", Device.Oaid),
+                ("install_time", install), ("update_time", install), ("ent", "false"),
+            });
+            // 前台 + 网络状态 + 自动跳登录页 (真机启动阶段行为)
+            await Logger.UserTraceAsync(1, newInstall: true);
+            await Logger.NetworkChangedAsync();
+            await Logger.AutoForwardAsync("login.html?login_type=1&login_style=0&login_scene=4",
+                10002, "lo_platform_login_wd", "login");
+            // ★ te.gif 传感器加密上报 (真机登录前发一次): 传感器活体轨迹, mock 缺失会被判非真机
+            try { await Logger.ReportSensorAsync(); } catch { }
+        }
+
+        /// <summary>
+        /// 登录后补发"进首页浏览"行为埋点: pv(首页) → 若干 impr(曝光) → ab_trigger。
+        /// 元素编号(page_el_sn)取自真机首页观测值, 避免随机非法值。
+        /// </summary>
+        public async Task ReportHomeBrowseEventsAsync()
+        {
+            SyncLogger();
+            const long homeSn = 10002;  // 首页 index
+            await Logger.PvAsync(homeSn, ("page_name", "index"));
+            // 真机首页常见曝光元素编号
+            long[] elSns = { 294115, 402870, 99956, 99293, 8084556, 501846, 15079, 4579326, 99288 };
+            foreach (var el in elSns)
+                await Logger.ImprAsync(homeSn, el, ("page_name", "index"));
+            await Logger.AbTriggerAsync(Random.Shared.Next(600000, 1400000).ToString());
+            // 登录后设备身份复报(action=3) + 首页上滑浏览行为
+            await Logger.UserTraceAsync(3, newInstall: false);
+            await Logger.UpSlideAsync(homeSn, 9285545, "06296172");
+            // ★ te.gif 传感器加密上报 (真机登录后发一次)
+            try { await Logger.ReportSensorAsync(); } catch { }
+        }
+
+        /// <summary>
+        /// 补发"首页点击某商品 → 进入商详"的行为埋点链 (对应真机 §11 目标动作):
+        /// click(首页 goods_list) → epv/leave(首页→商详, forward) → pv/page_show(H5 goods.html) → 商详 impr 批。
+        /// render 前调用, 让服务端看到"用户点击并浏览了该商品"的完整行为轨迹。
+        /// </summary>
+        /// <param name="goodsId">商品 id</param>
+        /// <param name="homeElSn">首页该商品卡片的 page_el_sn (默认取真机常见值)</param>
+        public async Task ReportClickGoodsEventsAsync(string goodsId, long homeElSn = 99862)
+        {
+            SyncLogger();
+            const long homeSn = 10002, goodsSn = 10014;
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string homePageId = $"{homeSn}_{now - 2000}_{Random.Shared.Next(100000000, 2000000000)}";
+            string goodsPageId = $"{goodsSn}_{now}_{Random.Shared.Next(100000000, 2000000000)}";
+
+            // 1) 首页点击商品卡片 (goods_list)
+            await Logger.ClickAsync(homeSn, homeElSn,
+                ("goods_id", goodsId), ("page_section", "goods_list"), ("page_name", "index"),
+                ("page_id", homePageId), ("list_type", "2"), ("idx", "1"), ("event_type", "2"));
+            // 2) 离开首页 → 商详 (epv/leave forward)
+            await Logger.EpvLeaveAsync(goodsSn, "forward",
+                ("goods_id", goodsId), ("page_name", "goods_detail"), ("page_id", goodsPageId),
+                ("page_type", "goods"), ("goods_status", "0"), ("inner_page", "0"),
+                ("enter_time", now.ToString()),
+                ("refer_page_sn", homeSn.ToString()), ("refer_page_el_sn", homeElSn.ToString()),
+                ("refer_page_name", "index"), ("refer_page_section", "goods_list"));
+            // 3) 商详页浏览 (pv/page_show, H5 goods.html)
+            await Logger.ReportAsync("pv", null, "main", new System.Collections.Generic.List<(string, string)>
+            {
+                ("event", "page_show"),
+                ("page_sn", goodsSn.ToString()), ("page_id", goodsPageId), ("page_name", "goods_detail"),
+                ("goods_id", goodsId), ("dpr", "2.75"), ("screen_width", "1106"), ("screen_height", "693"),
+                ("use_AMAnalytics", "1"),
+                ("refer_page_sn", goodsSn.ToString()), ("refer_page_name", "goods_detail"),
+            });
+            // 4) 商详曝光批 (真机 goods_detail 常见元素编号)
+            long[] els = { 5049756, 7350981, 7846056, 6324500, 98855, 96601 };
+            foreach (var el in els)
+                await Logger.ImprAsync(goodsSn, el,
+                    ("goods_id", goodsId), ("page_name", "goods_detail"),
+                    ("page_id", goodsPageId), ("refer_page_name", "goods_detail"));
         }
 
         // ==================== 状态持久化 (设备 + 会话 + pddid + cookie) ====================

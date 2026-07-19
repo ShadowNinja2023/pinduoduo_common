@@ -46,6 +46,93 @@ namespace PddLib.Register
             return d;
         }
 
+        // ============================================================
+        // 最小 mock (minimal change) —— 以真实干净基线为底, 只改硬唯一标识
+        // ============================================================
+
+        /// <summary>
+        /// 产出一台<b>最小 mock</b> 设备: 以 <see cref="DeviceProfile.FromSample01"/> (真实干净的
+        /// Lenovo TB322FC 基线, 与已知可信真机 WqfIGg5r 同指纹) 为底, 只随机化"硬唯一标识"。
+        /// </summary>
+        public static DeviceProfile MinimalNewDevice()
+        {
+            var d = DeviceProfile.FromSample01();
+            MinimalMock(d);
+            return d;
+        }
+
+        /// <summary>
+        /// 就地做<b>最小 mock</b>: <b>只随机化"硬唯一标识"(A 类) 及其强制派生字段</b>,
+        /// 其余全部保持基线真机的自洽快照值 (机型指纹 + 环境/行为/时间戳/传感器/加密预算字段)。
+        ///
+        /// 目的: 以最小改动面让服务端把它当作"同机型的另一台真机"并下发新 pddid, 用于验证
+        /// "设备过新无历史"是否为 render 硬风控(售罄)的根因 —— 若最小 mock 仍售罄, 则字段质量
+        /// 已非变量, 结论收敛到设备信誉/养号 (而非注册指纹泄露 mock)。
+        ///
+        /// 与 <see cref="Randomize"/> 的区别: <b>不动</b> did_info 计数器 / battery / capacity /
+        /// memory / boot_time / install_time / p90 / p7 / p2 / p30 / p49 / p125 / cpuFreq / volume /
+        /// apk 安装段 / adb·dev 标志。这些保留基线真机值, 保证整机快照自洽。
+        /// </summary>
+        public static void MinimalMock(DeviceProfile d)
+        {
+            d.IsMock = true;
+
+            // ===== 硬唯一标识 (不同物理设备必然不同; 服务端据此判为新设备/下发新 pddid) =====
+            d.AndroidId = RandomHex(8);                 // 16 hex — 设备主标识
+            d.Oaid = RandomHex(16);                     // 32 hex — 广告 ID
+            d.SharedPreferenceId = RandomHex(16);       // 32 hex — 安装态标识 (MD5 长)
+            d.Uuid = Guid.NewGuid().ToString();         // 标准 UUID
+            d.P47 = P47Generator.New();                 // 会话标识 (x-p1 RC4 key 来源)
+            d.InstallToken = Guid.NewGuid().ToString(); // per-install UUID
+            d.MediaDrmWidevineId = RandomHex(32);       // Widevine deviceUniqueId (每台物理设备唯一)
+
+            d.P125 = P125Codec.GenerateRandom();        // per-device 随机 UUID 加密 (保留会与基线设备碰撞)
+            d.P2 = PddLib.Crypto.P2Codec.RandomizeUniqueValues(d.P2); // attestation verifiedBootKey/Hash 每台唯一
+            // did_info: native 复合串, [3]=16hex(类硬件ID) / [8]=UUID 是设备唯一锚点 (01 报文 token105 含它,
+            // 疑为服务端设备主键之一)。只随机化这两个身份段, 计数器[4..7]/时间段保留基线 (符合最小改动)。
+            d.DidInfo = RandomizeDidInfo();
+
+            byte[] macBytes = RandomMacBytes();
+            d.P22Mac = MacToString(macBytes);
+
+            // ===== 强制派生联动 (否则与新标识不自洽, 反而成破绽) =====
+            d.IpList = BuildIpList(macBytes);           // wlan0/全局地址接口标识符 = 新 MAC 的 EUI-64
+            long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            d.RecomputeUserEnv2(nowMs);                 // user_env2 内嵌 android_id → 必须重算
+            // p10 = android_id, 由 Builder 内部自动取, 无需单独设
+
+            // ===== 持久身份类 (heavy Randomize 改了这些才拿到新 pddid; 最小 mock 之前保留 → 被判旧设备) =====
+            // 依据: "重度随机化能拿新 pddid, 最小 mock 返回旧 pddid" 的 delta 分析, 服务器设备锚点在此子集。
+            // p49: 88 个系统文件 inode CSV, 每台/每次安装唯一且稳定 (经典持久指纹, 头号嫌疑)。
+            d.P49 = P49Codec.RandomizeFromBaseline(d.P49);
+            // p30: per-device 加密 blob (干净设备 = 空风险列表, 重新生成而非复用基线)。
+            d.P30 = P30Codec.GenReportField("");
+            // 安装/开机时间戳: 同一台"设备"的安装时间相同 → 换新的安装/开机时刻使其成为独立安装实例。
+            long installMs = nowMs - RandomLong(7L * 86400_000, 180L * 86400_000);
+            d.P46InstallTime = installMs;
+            d.P90 = FormatPddTime(installMs);
+            long nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            d.BootTime = nowSec - RandomLong(3600, 10L * 86400);
+            // app 安装路径随机段 (Android10+ /data/app/~~seg1/pkg-seg2/): 每次安装唯一 (联动 type15.p75 / type16 maps)。
+            d.ApkDirSeg1 = RandomInstallSeg();
+            d.ApkDirSeg2 = RandomInstallSeg();
+            // p7: "包名|base64token;" 的 token 疑为 per-install app 签名/标识 (delta 剩余嫌疑)。
+            d.P7AbnormalApps = RandomizeP7(d.P7AbnormalApps);
+            // 电池/容量: 半持久数值 (charge_counter/seq/cycle + 精确字节数), 真机间有差异。
+            d.BatteryStatus = RandomizeBattery(d.BatteryStatus);
+            d.TotalCapacity = PerturbSmall(d.TotalCapacity, 0.0005);
+            d.TotalMemory = PerturbSmall(d.TotalMemory, 0.0003);
+            d.AvailableCapacity = (long)(d.TotalCapacity * (0.25 + NextDouble() * 0.6));
+
+            // ===== 新设备无历史会话 (清空上次 pddid 绑定的 cookie, 避免被链接回旧设备) =====
+            d.BodyCookie = "";
+            d.HeaderApiUid = "";
+
+            // 仍保持基线不变: 机型指纹 (fingerprint/p4/model/soc/分辨率/传感器) +
+            //   纯运行时行为量 (battery 电压温度电量/capacity/memory/cpuFreq/volume/did_info 计数器)。
+            //   —— 这些真机每次读都变, 服务器无法用作设备主键, 保留可维持"老真机"自洽观感。
+        }
+
         /// <summary>
         /// 就地随机化一个 DeviceProfile 的唯一性字段 (A/B/C 类), 保留 D 类机型指纹。
         /// </summary>

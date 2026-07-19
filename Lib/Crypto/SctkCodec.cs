@@ -21,6 +21,30 @@ namespace PddLib.Crypto
             return new string(result);
         }
 
+        /// <summary>7.77.0 app 内置 event_token (assets/component/event_token.json)。已用 01.trace 端到端验签。</summary>
+        public const string EventToken777 = "006AFBe_xJ0-ViV1fuCg0aLmi9v_t13u9Fi2GrCiBiH7nUepEdYILKeB94I5TGZJFu7vF";
+
+        /// <summary>8.8.0 app 内置 event_token。当前 mock 设备用 8.8.0, 默认用此。</summary>
+        public const string EventToken880 = "00dAFBWlnDxDmm1h+WwNyxLmi9Tt3td_tfAoHTR+xlHGFLX5IDjUrb2AG2lpJFwRWBa+W";
+
+        /// <summary>
+        /// 日志埋点 sctk 签名 (无 stack/env 形式, 占真机 161/181, 已用 01.trace 端到端验签 20/20)。
+        /// 对 <paramref name="rctkPost"/> (记录里 &amp;sctk= 之前的原串) 用 record 的 time 作 rctk_ts 签名。
+        /// 输出格式: {base64(doubleHash)}0{nonce}01#{token_head(45)}
+        /// 默认按 8.8.0 (当前 mock 设备版本); 验 7.77.0 真机样本时显式传 version/token。
+        /// </summary>
+        public static string SignLog(string rctkPost, string timestamp,
+            string version = "8.8.0", string token = EventToken880)
+        {
+            string nonce = GetNonce();
+            string rctkToken = token.Substring(token.Length - 24);   // 尾 24 = rctk_token
+            string head = token.Substring(0, token.Length - 24);     // 前 45 = token_head
+            string hashInput = $"rctk_plat=Android&rctk_ver={version}&rctk_ts={timestamp}" +
+                               $"&rctk_nonce={nonce}&rctk_rpkg=0&rctk_post={rctkPost}&rctk_token={rctkToken}";
+            string b64 = Convert.ToBase64String(CustomSHA256.DoubleHash(Encoding.UTF8.GetBytes(hashInput)));
+            return $"{b64}0{nonce}01#{head}";
+        }
+
         /// <summary>
         /// 日志发送sctk
         /// </summary>

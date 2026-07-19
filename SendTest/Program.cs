@@ -85,6 +85,331 @@ if (args.Length > 0 && args[0].Equals("android", StringComparison.OrdinalIgnoreC
     return;
 }
 
+// te.gif 编解码自检 (解真机 3 份密文 + Encrypt/Decrypt 往返): SendTest.exe tegif
+if (args.Length > 0 && args[0].Equals("tegif", StringComparison.OrdinalIgnoreCase))
+{
+    Console.WriteLine("=== te.gif 编解码自检 (AES-128-GCM(gzip(form))) ===\n");
+    string dir = @"f:\TraceWorkspaces\拼多多全量分析\scripts";
+    var samples = new (string bin, string nonce)[]
+    {
+        ("_tegif_1.bin", "0a4ccc76475f264697a4972e5855e82d"),
+        ("_tegif_2.bin", "080bd269c50bf653bb5bced16d813018"),
+        ("_tegif_3.bin", "3850608adeca5ef5e184f98b436ee9ce"),
+    };
+    int ok = 0, total = 0;
+    foreach (var (bin, nonce) in samples)
+    {
+        string path = System.IO.Path.Combine(dir, bin);
+        if (!System.IO.File.Exists(path)) { Console.WriteLine($"[跳过] 缺 {bin}"); continue; }
+        total++;
+        try
+        {
+            byte[] body = System.IO.File.ReadAllBytes(path);
+            string plain = PddLib.Crypto.TeGifCodec.Decrypt(body, nonce);
+            bool looksForm = plain.Contains("op=") && plain.Contains("sctk=");
+            bool sensor = plain.Contains("sub_op=sensor");
+            Console.WriteLine($"[解真机 {bin}] {body.Length}B → 明文 {plain.Length}B  form={looksForm} sensor={sensor}");
+            Console.WriteLine("   " + plain.Substring(0, Math.Min(140, plain.Length)) + "...\n");
+            if (looksForm) ok++;
+        }
+        catch (Exception ex) { Console.WriteLine($"[失败 {bin}] {ex.Message}"); }
+    }
+    // 往返
+    string demo = "op=event&sub_op=sensor&acc=8.5,0.1,4.8," + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "&sctk=x";
+    var (enc, n2) = PddLib.Crypto.TeGifCodec.Encrypt(demo);
+    string back = PddLib.Crypto.TeGifCodec.Decrypt(enc, n2);
+    bool rt = back == demo;
+    Console.WriteLine($"[往返] Encrypt→Decrypt 一致={rt}  (密文{enc.Length}B, nonce={n2})");
+    Console.WriteLine($"\n结果: 真机解密 {ok}/{total}, 往返 {(rt ? "PASS" : "FAIL")}");
+    return;
+}
+
+// 日志流新事件离线预览 (user_trace 设备身份 / sensor 批量): SendTest.exe logpreview
+if (args.Length > 0 && args[0].Equals("logpreview", StringComparison.OrdinalIgnoreCase))
+{
+    Console.WriteLine("=== 日志流新事件离线预览 (不发送) ===\n");
+    var dev = new PddLib.Register.DeviceProfile();
+    var http = new PddLib.Http();
+    var lg = new PddLib.Logging.EventLogger(dev, http, pddid: "TESTpddid", appVersion: "7.77.0",
+        internalVersion: "1758681188181", eventToken: PddLib.Crypto.SctkCodec.EventToken777);
+    lg.UserId = "9649784313145"; lg.Uin = "CX5LY67WH65MZAD2RNKJ5QAPOQ_GEXDA";
+
+    var (_, ut) = lg.BuildEventBody("event", "user_trace", "main", lg.BuildUserTraceFields(7));
+    Console.WriteLine("[user_trace action=7]\n" + ut + "\n");
+
+    var (_, sensor) = lg.BuildEventBody("event", "sensor", "main", lg.BuildSensorFields(8));
+    var (enc, nonce) = PddLib.Crypto.TeGifCodec.Encrypt(sensor);
+    string back = PddLib.Crypto.TeGifCodec.Decrypt(enc, nonce);
+    Console.WriteLine("[sensor data_type=2 明文]\n" + sensor + "\n");
+    Console.WriteLine($"[te.gif 加密往返一致={back == sensor}  密文{enc.Length}B]");
+    return;
+}
+
+// EventLogger 离线自检 (构造事件→打印域名/body→验回自签 sctk): SendTest.exe logdemo
+if (args.Length > 0 && args[0].Equals("logdemo", StringComparison.OrdinalIgnoreCase))
+{
+    Console.WriteLine("=== EventLogger 离线自检 (构造事件 + 自签 sctk 验回) ===\n");
+    var dev = PddLib.Register.DeviceProfile.FromSample01();
+    var http = new PddLib.Http();
+    var logger = new PddLib.Logging.EventLogger(dev, http, pddid: "WqfIGg5r",
+        uin: "QN2UXFRYRCA7VVTGQDKIGJS4BM_GEXDA", userId: "6398454719955");
+
+    var samples = new (string op, string? sub, string ckP, List<(string, string)> fields, PddLib.Logging.LogChannel? ch)[]
+    {
+        ("pv", null, "main", new(){("page_sn","10002")}, null),
+        ("impr", null, "main", new(){("page_sn","10002"),("page_el_sn","294115")}, null),
+        ("click", null, "main", new(){("page_sn","54264"),("page_el_sn","2665982")}, null),
+        ("event", "app_start", "main", new(){("boot_time","1784249886979")}, null),
+        ("event", "ab_trigger", "main", new(){("ab_tag","1331586")}, null),
+    };
+
+    int pass = 0;
+    foreach (var s in samples)
+    {
+        var (ch, body) = logger.BuildEventBody(s.op, s.sub, s.ckP, s.fields, s.ch);
+        // 验回 sctk
+        int si = body.IndexOf("&sctk=", StringComparison.Ordinal);
+        string rctkPost = body.Substring(0, si);
+        string sctkVal = Uri.UnescapeDataString(body.Substring(si + 6));
+        int eq = sctkVal.IndexOf('=');
+        string b64 = sctkVal.Substring(0, eq + 1);
+        string nonce = sctkVal.Substring(eq + 2, 32);
+        string ts = System.Text.RegularExpressions.Regex.Match(rctkPost, @"(?:^|&)time=(\d+)").Groups[1].Value;
+        const string TOKEN = "00dAFBWlnDxDmm1h+WwNyxLmi9Tt3td_tfAoHTR+xlHGFLX5IDjUrb2AG2lpJFwRWBa+W";  // 8.8.0
+        string hi = $"rctk_plat=Android&rctk_ver=8.8.0&rctk_ts={ts}&rctk_nonce={nonce}&rctk_rpkg=0&rctk_post={rctkPost}&rctk_token={TOKEN.Substring(TOKEN.Length - 24)}";
+        string got = Convert.ToBase64String(PddLib.Crypto.CustomSHA256.DoubleHash(System.Text.Encoding.UTF8.GetBytes(hi)));
+        bool ok = got == b64; if (ok) pass++;
+        string host = ch == PddLib.Logging.LogChannel.Ab ? "abtk" : ch == PddLib.Logging.LogChannel.Ad ? "ta" : "th-b";
+        Console.WriteLine($"[{(ok ? "✅" : "❌")}] {s.op}/{s.sub} → {host}.pinduoduo.com  (sctk 自验{(ok ? "通过" : "失败")})");
+        Console.WriteLine($"     body: {body.Substring(0, Math.Min(150, body.Length))}...\n");
+    }
+    Console.WriteLine($"自检 {samples.Length} 条: PASS={pass}/{samples.Length}  {(pass == samples.Length ? "✅ 上报器产出的 body 全部自洽可验" : "❌")}");
+    return;
+}
+
+// 真实日志流 sctk 端到端验签 (解析 01.trace 每条 record, 用 record.time + 恢复 nonce 重算 sctk): SendTest.exe logsctk [trace路径]
+if (args.Length > 0 && args[0].Equals("logsctk", StringComparison.OrdinalIgnoreCase))
+{
+    string tracePath = args.Length > 1 ? args[1]
+        : @"f:\TraceWorkspaces\拼多多全量分析\examples\log_flow\01.trace";
+    LogSctkVerify(tracePath);
+    return;
+
+    static void LogSctkVerify(string path)
+    {
+        Console.WriteLine("=== 真实日志流 sctk 端到端验签 (01.trace) ===\n");
+        if (!System.IO.File.Exists(path)) { Console.WriteLine($"[跳过] 不存在: {path}"); return; }
+        // 7.77.0 app 内置 event_token (assets/component/event_token.json), 三个样本一致
+        const string TOKEN = "006AFBe_xJ0-ViV1fuCg0aLmi9v_t13u9Fi2GrCiBiH7nUepEdYILKeB94I5TGZJFu7vF";
+        string rctkToken = TOKEN.Substring(TOKEN.Length - 24);   // 尾 24 = rctk_token
+
+        // 提取所有 Request-Body
+        string txt = System.IO.File.ReadAllText(path);
+        var bodies = new List<string>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            txt, @"Request-Body:<<(--EOF-\d+-)\r?\n(.*?)\r?\n\1", System.Text.RegularExpressions.RegexOptions.Singleline))
+            bodies.Add(m.Groups[2].Value);
+
+        int pass = 0, fail = 0, tested = 0;
+        foreach (var body in bodies)
+        {
+            foreach (var rec in body.Split('$'))
+            {
+                if (tested >= 20) break;
+                int si = rec.IndexOf("&sctk=", StringComparison.Ordinal);
+                if (si < 0) continue;
+                string rctkPost = rec.Substring(0, si);
+                string sctkVal = Uri.UnescapeDataString(rec.Substring(si + 6));
+                // 解析 {b64}0{nonce}01#{head}[#stack#env]
+                int eq = sctkVal.IndexOf('=');
+                if (eq < 0 || eq + 1 + 1 + 32 > sctkVal.Length) continue;
+                string b64 = sctkVal.Substring(0, eq + 1);
+                string nonce = sctkVal.Substring(eq + 2, 32);       // 跳过 b64 后的 '0'
+                var hashParts = sctkVal.Split('#');                 // [0]={b64}0{nonce}01 [1]=head [2]=stack [3]=env
+                string? stack = hashParts.Length >= 3 ? hashParts[2] : null;
+                string? env = hashParts.Length >= 4 ? hashParts[3] : null;
+                // record.time 作为 rctk_ts
+                var tm = System.Text.RegularExpressions.Regex.Match(rec, @"(?:^|&)time=(\d+)");
+                if (!tm.Success) continue;
+                string ts = tm.Groups[1].Value;
+                string op = System.Text.RegularExpressions.Regex.Match(rec, @"(?:^|&)op=([^&]*)").Groups[1].Value;
+
+                string Calc(bool withStackEnv)
+                {
+                    string hi = $"rctk_plat=Android&rctk_ver=7.77.0&rctk_ts={ts}&rctk_nonce={nonce}&rctk_rpkg=0&rctk_post={rctkPost}&rctk_token={rctkToken}";
+                    if (withStackEnv) hi += $"&rctk_stack={stack}&rctk_env={env}";
+                    return Convert.ToBase64String(PddLib.Crypto.CustomSHA256.DoubleHash(System.Text.Encoding.UTF8.GetBytes(hi)));
+                }
+
+                bool okNo = Calc(false) == b64;
+                bool okYes = (stack != null) && Calc(true) == b64;
+                bool ok = okNo || okYes;
+                tested++; if (ok) pass++; else fail++;
+                string kind = stack == null ? "无suffix" : (okYes ? "带stack/env→hash含" : (okNo ? "带suffix但hash不含" : "带suffix"));
+                Console.WriteLine($"  [{(ok ? "✅" : "❌")}] op={op,-8} time={ts} {kind}");
+                if (!ok) Console.WriteLine($"        期望 b64={b64}\n        no ={Calc(false)}" + (stack != null ? $"\n        yes={Calc(true)}" : ""));
+            }
+            if (tested >= 20) break;
+        }
+        Console.WriteLine($"\n验签 {tested} 条: PASS={pass} FAIL={fail}  {(fail == 0 ? "✅ 全部通过" : "❌ 有失败")}");
+    }
+}
+
+// sctk 哈希验证 (离线, 用 sctk_call_example.txt 已知向量对比): SendTest.exe sctktest [样本文件路径]
+if (args.Length > 0 && args[0].Equals("sctktest", StringComparison.OrdinalIgnoreCase))
+{
+    string samplePath = args.Length > 1 ? args[1]
+        : @"f:\TraceWorkspaces\拼多多全量分析\examples\sctk_call_example.txt";
+    SctkVerify(samplePath);
+    return;
+
+    static void SctkVerify(string path)
+    {
+        Console.WriteLine("=== sctk 哈希验证 (CustomSHA256 vs 真机已知向量) ===\n");
+        if (!System.IO.File.Exists(path)) { Console.WriteLine($"[跳过] 样本文件不存在: {path}"); return; }
+        string txt = System.IO.File.ReadAllText(path);
+
+        // ---- Capture B: 输入以精确 hex 给出 (无转写歧义) ----
+        // 最长 hex 串 = hash 输入 (rctk_plat=... 的 hex); 独立 64-hex(sub_12ae08 参数) = Round1; strlen(s=..) = 最终 base64
+        string? inputHex = System.Text.RegularExpressions.Regex.Matches(txt, "[0-9a-fA-F]{200,}")
+            .Select(m => m.Value).OrderByDescending(s => s.Length).FirstOrDefault();
+        var r1m = System.Text.RegularExpressions.Regex.Match(txt, @"sub_12ae08\(\)\s+([0-9a-f]{64})\b");
+        var fbm = System.Text.RegularExpressions.Regex.Match(txt, "strlen\\(s=\"([^\"]+)\"\\)");
+
+        bool anyFail = false;
+        if (inputHex != null && r1m.Success && fbm.Success)
+        {
+            string inputStr = System.Text.Encoding.UTF8.GetString(Convert.FromHexString(inputHex));
+            byte[] r1 = PddLib.Crypto.CustomSHA256.HashOnce(System.Text.Encoding.UTF8.GetBytes(inputStr));
+            string r1hex = Convert.ToHexString(r1).ToLowerInvariant();
+            byte[] dh = PddLib.Crypto.CustomSHA256.DoubleHash(System.Text.Encoding.UTF8.GetBytes(inputStr));
+            string dhB64 = Convert.ToBase64String(dh);
+
+            string expR1 = r1m.Groups[1].Value.ToLowerInvariant();
+            string expFinal = fbm.Groups[1].Value;
+            bool okR1 = r1hex == expR1;
+            bool okFinal = dhB64 == expFinal;
+            anyFail |= !(okR1 && okFinal);
+
+            Console.WriteLine("[Capture B] 输入=真机 hex 解码 (rctk_plat=...&rctk_token=...)");
+            Console.WriteLine($"  输入尾部: ...{inputStr[Math.Max(0, inputStr.Length - 70)..]}");
+            Console.WriteLine($"  含 rctk_stack/rctk_env? {(inputStr.Contains("rctk_stack") ? "是" : "否 ← 真机 7.77.0 无这两段")}");
+            Console.WriteLine($"  Round1  期望={expR1}");
+            Console.WriteLine($"  Round1  实得={r1hex}   {(okR1 ? "✅" : "❌")}");
+            Console.WriteLine($"  Double  期望(b64)={expFinal}");
+            Console.WriteLine($"  Double  实得(b64)={dhB64}   {(okFinal ? "✅" : "❌")}");
+        }
+        else Console.WriteLine("[Capture B] 未能从样本解析出 hex 向量, 跳过。");
+
+        // ---- Capture A: 端到端格式 (p0/p1/p2/p4 → sctk), 恢复 nonce 重算 ----
+        var tsM = System.Text.RegularExpressions.Regex.Match(txt, @"p1->(\d+)");
+        var postM = System.Text.RegularExpressions.Regex.Match(txt, @"p2->(\S+)\s+p3->");
+        var tokM = System.Text.RegularExpressions.Regex.Match(txt, @"p4->(\S+)\s+p5->");
+        var outM = System.Text.RegularExpressions.Regex.Match(txt, @"p3->\{sctk=([^}]+)\}");
+        if (tsM.Success && postM.Success && tokM.Success && outM.Success)
+        {
+            string ts = tsM.Groups[1].Value, post = postM.Groups[1].Value, token = tokM.Groups[1].Value;
+            string outSctk = outM.Groups[1].Value;                    // {b64}0{nonce}01#{tokenhead}
+            string head = outSctk.Split('#')[0];                      // {b64}0{nonce}01
+            string nonce = head.Substring(head.Length - 2 - 32, 32);  // 倒数 34~2 = nonce(32)
+            string expB64 = head.Substring(0, head.Length - 2 - 32 - 1); // 去掉尾部 "01" + nonce(32) + 前导 "0"
+            string rctkToken = token.Substring(token.Length - 24);
+            string hashInput = $"rctk_plat=Android&rctk_ver=7.77.0&rctk_ts={ts}&rctk_nonce={nonce}&rctk_rpkg=0&rctk_post={post}&rctk_token={rctkToken}";
+            string gotB64 = Convert.ToBase64String(PddLib.Crypto.CustomSHA256.DoubleHash(System.Text.Encoding.UTF8.GetBytes(hashInput)));
+            bool okA = gotB64 == expB64;
+            anyFail |= !okA;
+            Console.WriteLine($"\n[Capture A] 端到端 (ver=7.77.0, ts={ts}, nonce={nonce})");
+            Console.WriteLine($"  期望 b64={expB64}");
+            Console.WriteLine($"  实得 b64={gotB64}   {(okA ? "✅" : "❌")}");
+        }
+        else Console.WriteLine("\n[Capture A] 未能解析端到端向量, 跳过。");
+
+        Console.WriteLine($"\n{(anyFail ? "❌ 有不匹配 —— CustomSHA256 或 hashInput 组装需修正。" : "✅ 全部匹配 —— CustomSHA256 核心哈希正确。")}");
+        Console.WriteLine("提示: SctkCodec.GetSctk 的 hashInput 末尾拼了 &rctk_stack=&rctk_env=, 但真机 7.77.0 无此两段, 需按版本核对格式。");
+    }
+}
+
+// 只发 01 × N 次, 验证每次拿到不同的新 pddid: SendTest.exe min01 [count] [proxyUrl]
+if (args.Length > 0 && args[0].Equals("min01", StringComparison.OrdinalIgnoreCase))
+{
+    int n = args.Length > 1 && int.TryParse(args[1], out int nn) ? nn : 5;
+    string? mp = args.Length > 2 ? args[2] : null;
+    Console.WriteLine($"=== 最小 mock 只发 01 × {n} 次 (验证每次拿到不同新 pddid) ===\n");
+
+    var pids = new List<string>();
+    for (int i = 0; i < n; i++)
+    {
+        var dev = PddLib.Register.DeviceMocker.MinimalNewDevice();
+        var cli = new PddLib.Register.RegisterClient(dev, mp);
+        string pid = "(空)";
+        try
+        {
+            var r = await cli.Send01Async();
+            var m = System.Text.RegularExpressions.Regex.Match(r.Body ?? "", "\"pdd_id\":\"([^\"]+)\"");
+            pid = m.Success ? m.Groups[1].Value : $"(未解析, HTTP {(int)r.StatusCode}, body={Trunc(r.Body, 160)})";
+        }
+        catch (Exception ex) { pid = $"(异常 {ex.GetType().Name}: {ex.Message})"; }
+        pids.Add(pid);
+        Console.WriteLine($"  [{i + 1}/{n}] android_id={dev.AndroidId}  →  pdd_id={pid}");
+        await Task.Delay(300);
+    }
+
+    int distinct = pids.Where(p => p.Length == 8 && !p.StartsWith("(")).Distinct().Count();
+    int valid = pids.Count(p => p.Length == 8 && !p.StartsWith("("));
+    Console.WriteLine($"\n结果: 有效 pddid {valid}/{n}, 互不相同 {distinct} 个。");
+    Console.WriteLine(distinct == valid && valid == n
+        ? "✅ 每次都拿到不同的新 pddid。"
+        : "⚠ 存在重复或无效 pddid, 说明仍有设备锚点未随机化。");
+    return;
+
+    static string Trunc(string? s, int n) => s == null ? "" : (s.Length <= n ? s : s[..n] + "...");
+}
+
+// 最小 mock 注册 (以干净基线只改硬唯一标识→拿新 pddid): SendTest.exe minimal [proxyUrl]
+if (args.Length > 0 && args[0].Equals("minimal", StringComparison.OrdinalIgnoreCase))
+{
+    string? p = args.Length > 1 ? args[1] : null;
+    Console.WriteLine("=== 最小 mock 注册 (FromSample01 基线, 只改硬唯一标识 → 01~08 拿新 pddid) ===\n");
+
+    var baseline = PddLib.Register.DeviceProfile.FromSample01();
+    var dev = PddLib.Register.DeviceMocker.MinimalNewDevice();
+    Console.WriteLine("[已随机化的硬唯一标识 (仅这些 + 派生 ip_list/user_env2 变了)]");
+    Console.WriteLine($"  android_id : {baseline.AndroidId} → {dev.AndroidId}");
+    Console.WriteLine($"  oaid       : {baseline.Oaid} → {dev.Oaid}");
+    Console.WriteLine($"  sp_id      : {baseline.SharedPreferenceId} → {dev.SharedPreferenceId}");
+    Console.WriteLine($"  uuid       : {baseline.Uuid} → {dev.Uuid}");
+    Console.WriteLine($"  p47        : {baseline.P47} → {dev.P47}");
+    Console.WriteLine($"  installTok : {baseline.InstallToken} → {dev.InstallToken}");
+    Console.WriteLine($"  widevineId : {baseline.MediaDrmWidevineId} → {dev.MediaDrmWidevineId}");
+    Console.WriteLine($"  mac        : {baseline.P22Mac} → {dev.P22Mac}");
+    Console.WriteLine($"  p125       : (随机重算)");
+    Console.WriteLine($"  did_info[3]/[8] 身份段: (随机化, 计数器保留)");
+    Console.WriteLine($"    baseline did_info={baseline.DidInfo}");
+    Console.WriteLine($"    mock     did_info={dev.DidInfo}");
+    Console.WriteLine($"  p49/p30/apk段: (随机重算)");
+    Console.WriteLine($"  安装/开机时间戳: boot_time {baseline.BootTime}→{dev.BootTime}  p46 {baseline.P46InstallTime}→{dev.P46InstallTime}");
+    Console.WriteLine("[保持基线不变的代表字段 (机型指纹 + 纯运行时行为量)]");
+    Console.WriteLine($"  fingerprint={dev.Fingerprint}");
+    Console.WriteLine($"  battery/capacity/memory/cpuFreq/volume/did_info计数器 = 基线");
+    Console.WriteLine($"  adb_enabled={dev.AdbEnabled} development_enabled={dev.DevelopmentEnabled}\n");
+
+    try
+    {
+        var android = new PddLib.Android(dev, p);
+        if (!await android.RegisterDevice())
+            Console.WriteLine("[失败] 01 未取得 pdd_id");
+        else
+        {
+            Console.WriteLine($"[注册成功] 新 pddid={android.Pddid}");
+            var jar = android.Cookies.GetCookies(new Uri("https://api.pinduoduo.com"));
+            Console.WriteLine($"  CookieContainer 数量={jar.Count}: {string.Join("; ", jar.Select(cc => $"{cc.Name}={cc.Value}"))}");
+            Console.WriteLine("\n下一步: 用该 pddid(etag) + 登录账号发 render, 观察是否仍售罄 (硬风控)。");
+        }
+    }
+    catch (Exception ex) { Console.WriteLine($"[异常] {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}"); }
+    return;
+}
+
 // 临时: 用 .NET GZipStream 验证 2af anti-token 解密+解压: SendTest.exe afdec
 if (args.Length > 0 && args[0].Equals("afdec", StringComparison.OrdinalIgnoreCase))
 {

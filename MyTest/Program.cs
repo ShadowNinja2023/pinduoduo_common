@@ -1,6 +1,9 @@
-﻿using PddLib;
+﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using PddLib;
 using PddLib.Crypto;
 using PddLib.Crypto.Extra;
+using System.Web;
 
 namespace MyTest
 {
@@ -22,7 +25,7 @@ namespace MyTest
             else
             {
                 Console.WriteLine("[新建] 无存档 → 注册 + 登录新设备...");
-                android = await Android.CreateNewAsync("http://127.0.0.1:8888");
+                android = await Android.CreateMinimalAsync("http://127.0.0.1:8888");
 
                 android.SmsCodeProvider = async (ctx) =>
                 {
@@ -41,17 +44,15 @@ namespace MyTest
                 {
                     Console.WriteLine($"[警告] 登录未成功 ({login.Stage}: {login.Message}), 未保存状态");
                 }
+
+                await android.ReportMetaInfoAsync();
             }
 
-            string goodsId = "517027924972";
+            string goodsId = "237907536111";
 
             //var search = await android.SearchFullAsync("牙刷", 1, 20);
 
-            await android.ReportMetaInfoAsync();
-
-            var result = await android.GetItemDetailFullAsync(goodsId);
-            Console.WriteLine($"[render] HTTP {(int)result.StatusCode}");
-            Console.WriteLine(result.Body.Length > 600 ? result.Body[..600] + "..." : result.Body);
+            var item = await android.GetItemDetailViaHomeAsync("237907536111");
 
             Console.WriteLine($"完成 pddid={android.Pddid}  机型={android.Device.Brand}/{android.Device.Model}");
         }

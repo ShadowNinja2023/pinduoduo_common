@@ -140,6 +140,27 @@ namespace PddLib
         }
 
         /// <summary>
+        /// 发送 POST 请求, body 为原始字节 (自定义 content-type / content-encoding)。
+        /// 用于日志埋点 t.gif (application/x-www-form-urlencoded + gzip)。
+        /// </summary>
+        public async Task<HttpResult> PostRawBytesAsync(string url, byte[] body, string contentType,
+            Dictionary<string, string>? headers = null, string? contentEncoding = null)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(body) };
+            request.Content.Headers.Remove("Content-Type");
+            request.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
+            if (contentEncoding != null)
+                request.Content.Headers.TryAddWithoutValidation("Content-Encoding", contentEncoding);
+            if (headers != null)
+                foreach (var kv in headers)
+                    request.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+
+            var response = await _client.SendAsync(request);
+            var responseBody = await response.Content.ReadAsStringAsync();
+            return new HttpResult { Body = responseBody, Headers = response.Headers, StatusCode = response.StatusCode };
+        }
+
+        /// <summary>
         /// 发送 GET 请求，返回 body 字符串。
         /// </summary>
         public async Task<string> GetAsync(string url, Dictionary<string, string>? headers = null)
