@@ -995,6 +995,7 @@ namespace PddLib
         public async Task ReportStartupEventsAsync()
         {
             SyncLogger();
+            Logger.BeginBatch();   // t.gif 事件缓冲, 末尾 FlushAsync 一次性按通道合并发送
             string bootMs = (Device.BootTime * 1000L).ToString();
             string install = Device.P46InstallTime.ToString();
             string osv = "Android" + (Device.Osv ?? "15");
@@ -1024,6 +1025,7 @@ namespace PddLib
             await Logger.NetworkChangedAsync();
             await Logger.AutoForwardAsync("login.html?login_type=1&login_style=0&login_scene=4",
                 10002, "lo_platform_login_wd", "login");
+            await Logger.FlushAsync();   // 合并发送 th-b/abtk 批
             // ★ te.gif 传感器加密上报 (真机登录前发一次): 传感器活体轨迹, mock 缺失会被判非真机
             try { await Logger.ReportSensorAsync(); } catch { }
         }
@@ -1035,6 +1037,7 @@ namespace PddLib
         public async Task ReportHomeBrowseEventsAsync()
         {
             SyncLogger();
+            Logger.BeginBatch();
             const long homeSn = 10002;  // 首页 index
             await Logger.PvAsync(homeSn, ("page_name", "index"));
             // 真机首页常见曝光元素编号
@@ -1045,6 +1048,7 @@ namespace PddLib
             // 登录后设备身份复报(action=3) + 首页上滑浏览行为
             await Logger.UserTraceAsync(3, newInstall: false);
             await Logger.UpSlideAsync(homeSn, 9285545, "06296172");
+            await Logger.FlushAsync();   // 合并发送 th-b/abtk 批
             // ★ te.gif 传感器加密上报 (真机登录后发一次)
             try { await Logger.ReportSensorAsync(); } catch { }
         }
@@ -1059,6 +1063,7 @@ namespace PddLib
         public async Task ReportClickGoodsEventsAsync(string goodsId, long homeElSn = 99862)
         {
             SyncLogger();
+            Logger.BeginBatch();
             const long homeSn = 10002, goodsSn = 10014;
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             string homePageId = $"{homeSn}_{now - 2000}_{Random.Shared.Next(100000000, 2000000000)}";
@@ -1090,6 +1095,7 @@ namespace PddLib
                 await Logger.ImprAsync(goodsSn, el,
                     ("goods_id", goodsId), ("page_name", "goods_detail"),
                     ("page_id", goodsPageId), ("refer_page_name", "goods_detail"));
+            await Logger.FlushAsync();   // 合并发送: click→epv→pv→impr 批 一次 HTTP
         }
 
         // ==================== 状态持久化 (设备 + 会话 + pddid + cookie) ====================

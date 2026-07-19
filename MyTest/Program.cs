@@ -25,7 +25,7 @@ namespace MyTest
             else
             {
                 Console.WriteLine("[新建] 无存档 → 注册 + 登录新设备...");
-                android = await Android.CreateMinimalAsync("http://127.0.0.1:8888");
+                android = await Android.CreateNewAsync("http://127.0.0.1:8888");
 
                 android.SmsCodeProvider = async (ctx) =>
                 {
@@ -48,11 +48,11 @@ namespace MyTest
                 await android.ReportMetaInfoAsync();
             }
 
-            string goodsId = "237907536111";
+            string goodsId = "517027924972";
 
             //var search = await android.SearchFullAsync("牙刷", 1, 20);
 
-            var item = await android.GetItemDetailViaHomeAsync("237907536111");
+            var item = await android.GetItemDetailViaHomeAsync(goodsId);
 
             Console.WriteLine($"完成 pddid={android.Pddid}  机型={android.Device.Brand}/{android.Device.Model}");
         }
