@@ -295,11 +295,64 @@ namespace PddLib
         /// 生成 H5 anti_content 风控 token ("0as...")。首次调用预热 H5 服务, 之后复用同一进程。
         /// </summary>
         /// <param name="env">浏览器指纹 env 覆盖; 传 null 用 <see cref="BuildH5Env"/> 从当前设备派生。</param>
+        /// <summary>
+        /// App WebView 注入的 navigator.userAgent (= 业务请求头 user-agent, 带 "android " 前缀 + phh_* 后缀)。
+        /// anti_content 的 tag15(userAgent) 与请求头 UA 须一致, 故两处共用本方法。
+        /// </summary>
+        public string BuildAppWebViewUa() =>
+            $"android Mozilla/5.0 (Linux; Android {Device.Osv}; {Device.Model} Build/{Device.BuildId}; wv) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/143.0.7499.192 Safari/537.36 " +
+            $" phh_android_version/{AppVersion} phh_android_build/{AppBuildHash}" +
+            " phh_android_channel/main_guanwang pversion/0";
+
         public async Task<string> GetAntiContentAsync(object? env = null)
         {
-            //return "0asWfqnFpioyj9vxknP4PpgU1UWNI1v9oirccirc96Ojg-ny5T-Dv5r76mNgUdsd8KrputvVTBf0TMfUD3NV4PR2vfXUPxN4aVK-wVeFl3a1EnR3xr1zOI-vhv-7kW0KFUYZLPe4_MQdEMqB_sMZpZngUNEV5Pt6Yof84FqANquqXjMnkS_67C1SXikcI12_buBVKpREMV0vZzDtUTf10IynBZeynpd3ABV5Ds1rT_-j3CK31lHBjio6A304FPDvZ7A_KIOLViFpsws1z_wW8coiQS6MqcJxzCSc3udq8rOkaSJaz6qVKWZt8I42t1c6OREWN0eDHt82aeMv1wB6kZY6oI5ueaXTAgF7DB4fX-re6Bx4bay0A-Y3HzbP7KP4yV6jAmZbtZi6bwNxF4pU7CfGZ5qGlAfGtIm_dvV_qPMqhKMwO2gaTtzTARAh2MdUV21g0Um-Ors-Ov4xZoNmNSrvaaZ1FOggRfp0ycgBdcgj1Mlz2zUPMXMtEp5ghkAKRoItP8Wx-GongxQ-InyA2KSYH0oQvQY6MHJLyBHyWXUpoKSHdrmRWLlU5ZwnwzoQIx1-JCHC6kagtzSF3-xnUV8FYKCPMnDIJyKCqqdUi3tUYrcpjydE0Dr5NfD8zbSEd5AkcaXlbclShAsSPA3bEWcIGha833-hrMAHNPaLUwclRRLEyHCqcNH-zdL7NKv-UWFN9d";
-            var client = await GetH5ClientAsync();
-            return await client.GetAntiContentAsync(env ?? BuildH5Env());
+            // anti_content 主体纯 C# (AntiContentCodec) 脱机组装; 仅 nano_fp 首次经 H5 服务(jsdom 真算法)按设备生成一次。
+            // 以真机 token 为基准 mint: 刷新 tag22(ms)/tag9(秒时间戳) + 对齐 tag19 pdd_user_id(会话uid)/
+            //   tag15 UA(请求头UA)/tag8 屏幕/tag20 api_uid/tag23 pdd_vds(会话真实cookie)/tag16·17 nano_fp(真算法产);
+            //   audio(28)/href·pbc(7·11) 保留真机基线。每次换随机盐 → header/body 两处各自独立。
+            //   (二分已证 UA/screen/api_uid/pdd_vds 对齐安全; nano_fp 纯随机售罄→改用 jsdom 真算法产。)
+            string? uid = Session?.Uid > 0 ? Session.Uid.ToString() : null;
+            // nano_fp(tag16/17): fp 含 env 指纹+校验, 纯随机不被服务端接受 → 必须真算法产。
+            //   首次(Device.NanoFp 空)向 H5 服务(jsdom 真算法)按设备 env 生成一个合法 fp, 存 DeviceProfile 持久复用(一次/设备)。
+            //   失败则留空 → MintFromReal 内部保留真机基线(仍可出价)。
+            if (string.IsNullOrEmpty(Device.NanoFp))
+            {
+                try
+                {
+                    var client = await GetH5ClientAsync();
+                    Device.NanoFp = await client.GetNanoFpAsync(env ?? BuildH5Env());
+                }
+                catch { /* 生成失败: 留空, 回退真机基线 */ }
+            }
+            return H5.AntiContentCodec.MintFromReal(
+                H5.AntiContentBaseline.RealToken,
+                pddUserId: uid,
+                apiUid: ReadCookie("api_uid"),    // tag20 api_uid (会话真实 cookie)
+                pddVds: ReadCookie("pdd_vds"),     // tag23 pdd_vds (会话真实 cookie)
+                screenAvailW: (int)Math.Round(Device.ScreenWidth / (Device.Dpr > 0 ? Device.Dpr : 2.75)),
+                screenAvailH: (int)Math.Round(Device.ScreenHeight / (Device.Dpr > 0 ? Device.Dpr : 2.75)),  // tag8 屏幕
+                ua: BuildAppWebViewUa(),           // tag15 UA (== 请求头 UA)
+                nanoFp: string.IsNullOrEmpty(Device.NanoFp) ? null : Device.NanoFp);  // tag16/17 真算法产 per-device fp
+        }
+
+        /// <summary>
+        /// 读取当前会话 CookieContainer 里指定 cookie (anti_content 的 tag20 api_uid / tag23 pdd_vds
+        /// 均为 goods.html 中转页(m.pinduoduo.net) GET 时服务端 Set-Cookie)。
+        /// 优先 m.pinduoduo.net(H5 域), 回退 api.pinduoduo.com; 读不到返回 null (调用方保留真机基线值)。
+        /// </summary>
+        private string? ReadCookie(string name)
+        {
+            foreach (var host in new[] { "https://m.pinduoduo.net", "https://api.pinduoduo.com" })
+            {
+                try
+                {
+                    var c = Http.Cookies.GetCookies(new Uri(host))[name];
+                    if (c != null && !string.IsNullOrEmpty(c.Value)) return c.Value;
+                }
+                catch { /* 忽略, 试下一个域 */ }
+            }
+            return null;
         }
 
         /// <summary>生成 H5 混合加密的 {csr_risk_token, rawKey, rawIV} (复用同一 H5 服务实例)。</summary>
@@ -373,11 +426,7 @@ namespace PddLib
             AntiTokenKind antiToken = AntiTokenKind.None,
             string? xp1Path = null, string? xp1Body = null, bool useAntiContent = false,string referer = "Android")
         {
-            string ua =
-                $"android Mozilla/5.0 (Linux; Android {Device.Osv}; {Device.Model} Build/{Device.BuildId}; wv) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/143.0.7499.192 Safari/537.36 " +
-                $" phh_android_version/{AppVersion} phh_android_build/{AppBuildHash}" +
-                " phh_android_channel/main_guanwang pversion/0";
+            string ua = BuildAppWebViewUa();
 
             string dpr = Device.Dpr > 0 ? Device.Dpr.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "";
             string queries =
@@ -634,6 +683,14 @@ namespace PddLib
                     }
                     catch (Exception ex) { Log.Info($"[render] encrypt_info 解密失败: {ex.Message}"); }
                 }
+                else
+                {
+                    // 无 encrypt_info 且无验证码 → 售罄降级 (status=5) 或其它。打印诊断便于定位。
+                    int status = resultJson["goods"]?["status"]?.Value<int>() ?? -1;
+                    bool showRec = (resultJson["goods"]?["show_rec"]?.Value<int>() ?? 0) == 1;
+                    Log.Info($"[render] ⚠ 未出价 (无 encrypt_info): goods.status={status} show_rec={showRec} " +
+                             $"→ 售罄软降级。多半是 oak 参数无效/首页降级/会话过期, 而非日志流/dn_le。");
+                }
 
             }
 
@@ -674,7 +731,11 @@ namespace PddLib
             if (string.IsNullOrEmpty(targetGoods))
                 throw new InvalidOperationException("无法确定 goods_id");
 
-            Log.Info($"[render via home] item[{idx}] oak_rcto={(rcto.Length > 0 ? "有" : "空")} gallery_token={(galleryToken.Length > 0 ? "有" : "空")} → goods={targetGoods}");
+            Log.Info($"[render via home] 首页商品数={list.Count} item[{idx}] goods={targetGoods} " +
+                     $"oak_rcto={(rcto.Length > 0 ? $"有({rcto.Length}B: {rcto.Substring(0, Math.Min(12, rcto.Length))}…)" : "★空★")} " +
+                     $"gallery_token={(galleryToken.Length > 0 ? "有" : "★空★")} gallery={(gallery.Length > 0 ? "有" : "★空★")}");
+            if (rcto.Length == 0)
+                Log.Info("[render via home] ⚠ oak_rcto 为空! 首页可能返回了降级列表(无归因参数), render 大概率售罄。检查首页请求是否正常/会话是否过期。");
             return await GetItemDetailFullAsync(targetGoods, AntiTokenKind.Info4, galleryToken, rcto, gallery);
         }
 
@@ -1034,21 +1095,60 @@ namespace PddLib
         /// 登录后补发"进首页浏览"行为埋点: pv(首页) → 若干 impr(曝光) → ab_trigger。
         /// 元素编号(page_el_sn)取自真机首页观测值, 避免随机非法值。
         /// </summary>
+        /// <summary>真机首页商品卡片曝光位 page_el_sn 池 (取自 FULL 抓包首页 impr 观测值)。</summary>
+        private static readonly long[] HomeGoodsElSns =
+            { 99862, 523894, 1110237, 1110247, 3564456, 3566875, 8233150, 7567298, 7939420, 99952, 99003, 5605995, 7866805, 4936016, 941225, 8004848 };
+        /// <summary>真机首页 UI 元素曝光位 (无 goods_id 的页面元素)。</summary>
+        private static readonly long[] HomeUiElSns =
+            { 294115, 402870, 99956, 99293, 8084556, 501846, 15079, 4579326, 99288, 99132 };
+
         public async Task ReportHomeBrowseEventsAsync()
         {
             SyncLogger();
             Logger.BeginBatch();
             const long homeSn = 10002;  // 首页 index
             await Logger.PvAsync(homeSn, ("page_name", "index"));
-            // 真机首页常见曝光元素编号
-            long[] elSns = { 294115, 402870, 99956, 99293, 8084556, 501846, 15079, 4579326, 99288 };
-            foreach (var el in elSns)
+
+            // ★ 行为丰富度对齐真机: 拉真实首页列表, 为【每个真实商品】发一条曝光 impr
+            //   (真机首页 impr 覆盖 10+ 商品; 我们之前只 1 个 → 被画像判为非真人浏览)。
+            //   商品 goods_id/list_id 均取自真实接口 → 天然多样 + 每次不同。
+            int imprCount = 0;
+            try
+            {
+                var home = await GetHomePageItemsAsync();
+                var hj = JsonConvert.DeserializeObject<JObject>(home.Body);
+                if (hj?["data"]?["goods_list"] is JArray goods)
+                {
+                    int idx = 1;
+                    foreach (var g in goods)
+                    {
+                        string gid = g?["data"]?["goods_id"]?.ToString() ?? "";
+                        if (gid.Length == 0) continue;
+                        string listId = g?["data"]?["track_info"]?["p_rec"]?["list_id"]?.ToString() ?? RandBase62(12);
+                        long el = HomeGoodsElSns[idx % HomeGoodsElSns.Length];
+                        await Logger.ImprAsync(homeSn, el,
+                            ("goods_id", gid), ("idx", idx.ToString()), ("list_id", listId),
+                            ("page_name", "index"), ("page_section", "goods_list"),
+                            ("list_type", "2"), ("event_type", "0"));
+                        idx++; imprCount++;
+                    }
+                }
+            }
+            catch (Exception ex) { Log.Info($"[home impr] 取首页列表失败, 回退固定曝光: {ex.Message}"); }
+
+            // UI 元素曝光批 (页面固定元素位, 无 goods_id)
+            foreach (var el in HomeUiElSns)
+            {
                 await Logger.ImprAsync(homeSn, el, ("page_name", "index"));
+                imprCount++;
+            }
+            Log.Info($"[home impr] 首页曝光 {imprCount} 条 (商品+UI)");
+
             await Logger.AbTriggerAsync(Random.Shared.Next(600000, 1400000).ToString());
             // 登录后设备身份复报(action=3) + 首页上滑浏览行为
             await Logger.UserTraceAsync(3, newInstall: false);
-            await Logger.UpSlideAsync(homeSn, 9285545, "06296172");
-            await Logger.FlushAsync();   // 合并发送 th-b/abtk 批
+            await Logger.UpSlideAsync(homeSn, HomeGoodsElSns[Random.Shared.Next(HomeGoodsElSns.Length)], RandBase62(8));
+            await Logger.FlushAsync();   // 合并发送 th-b/abtk 批 (超 30 条自动分包)
             // ★ te.gif 传感器加密上报 (真机登录后发一次)
             try { await Logger.ReportSensorAsync(); } catch { }
         }

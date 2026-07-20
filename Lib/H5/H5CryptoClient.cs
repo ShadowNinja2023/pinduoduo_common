@@ -111,6 +111,16 @@ namespace PddLib.H5
             return r.GetString()!;
         }
 
+        /// <summary>
+        /// 用真实算法(jsdom)按设备 env 生成一个合法 nano_fp (= anti_content tag16/17)。
+        /// fp 结构含 env 指纹+校验, 纯随机不被服务端接受, 故必须真算法产。一次/设备调用, C# 存 DeviceProfile.NanoFp 持久复用。
+        /// </summary>
+        public async Task<string> GetNanoFpAsync(object? env = null)
+        {
+            var r = await RpcAsync(new { cmd = "nanofp", env }, TimeSpan.FromSeconds(30));
+            return r.GetString()!;
+        }
+
         /// <summary>生成 {csr_risk_token, rawKey, rawIV}。rawKey/rawIV 留作 encrypt_info 解密。</summary>
         public async Task<KeyIvCsr> GetKeyIvCsrAsync()
         {

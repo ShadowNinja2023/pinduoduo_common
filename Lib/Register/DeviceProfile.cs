@@ -148,6 +148,13 @@ namespace PddLib.Register
         /// <summary>header cookie: api_uid (服务端首访下发, 可空测试)</summary>
         public string HeaderApiUid { get; set; } = "Ck+BXWoZ7cdhwwDbr/q2Ag==";
 
+        /// <summary>
+        /// anti_content nano_fp (= tag16 nano_cookie_fp = tag17 nano_storage_fp)。
+        /// H5 前端持久随机 ID (存 cookie+localStorage 的 _nano_fp), per-device 稳定。
+        /// 空 → GetAntiContentAsync 首次调用时懒生成 (AntiContentCodec.GenNanoFp) 并回填, 随存档持久。
+        /// </summary>
+        public string NanoFp { get; set; } = "";
+
         // ===== info2 (2af anti-token) 专用字段 (登录类接口) =====
         /// <summary>SDK_INT (Build.VERSION.SDK_INT)。安卓15=35。</summary>
         public int SdkInt { get; set; } = 35;

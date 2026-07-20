@@ -34,7 +34,7 @@ namespace MyTest
                     return input ?? "";
                 };
 
-                var login = await android.Login("13152661990", "86", "1");
+                var login = await android.Login("15578898540", "86", "1");
                 if (login.Success)
                 {
                     android.SaveState(statePath);
@@ -48,11 +48,11 @@ namespace MyTest
                 await android.ReportMetaInfoAsync();
             }
 
-            string goodsId = "517027924972";
+            string goodsId = "237907536111";
 
             //var search = await android.SearchFullAsync("牙刷", 1, 20);
 
-            var item = await android.GetItemDetailViaHomeAsync(goodsId);
+            var item = await android.GetItemDetailViaHomeAsync();
 
             Console.WriteLine($"完成 pddid={android.Pddid}  机型={android.Device.Brand}/{android.Device.Model}");
         }

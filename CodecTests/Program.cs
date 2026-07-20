@@ -2,6 +2,7 @@ using System.Text;
 using PddLib.Crypto;
 using PddLib.Crypto.Extra;
 using PddLib.Register;
+using PddLib.H5;
 
 // ============================================================
 // C 类 native 自产字段 codec 往返/正向验证
@@ -324,6 +325,88 @@ Console.WriteLine("\n==== info2 kernel(/proc/version) 随设备派生 (Info2Base
     // 3) 解析失败/空 → 回落基线
     Check("空 uname 回落基线", Convert.ToBase64String(Info2Baseline.FromUname(null)) == Info2Baseline.KernelValueB64);
     Check("非法 uname 回落基线", Convert.ToBase64String(Info2Baseline.FromUname("garbage no linux")) == Info2Baseline.KernelValueB64);
+}
+
+Console.WriteLine("\n==== anti_content ('0as') 脱机编解码 (AntiContentCodec, 跨语言逐字节 vs JS ground truth) ====");
+{
+    // mock token + pre_deflate (JS dump_collectors.js 产出的 ground truth, 见 scripts/h5_tools/dump_collectors_out.json)
+    const string mockToken =
+        "0asAfa5E-wCEXxamXHSt_USOOG7qidIxXaGtmY6PI8Nj2GiiQqNFBti5fGm66HoXqbqauD4JnGPoHpmoXpXoU4OP0ginDbbqiDToX0TVtsrCpBroJA-QzoAdSkBeUeBVVE-VcEBeceBfKkLK7UK1z-eAkUK9T86Q4X4akurfje-vVExvRpr3FuF3cTULKh1B_VSRBp-FveEtq5-KwpFeLESB2KEtJVIt5Czsl_UV1m-AzAzLfHk-RHe-xFSA6cgRQIStlwUe1m1ctm-eRuIt5VMsl7MKcSD-F51BE4CC-iRd-el1UfoEFKZd_edebnBwgBcv332_MLAkEV7VPsIdSwqQn2Mv_F3p-M35-MeWKss17dR-Ege6d_IM442tow7X-35MsiqyNA14xPJB2NoX9996ej383EJKQ9y";
+    const string preHex =
+        "02010000016c384668747470733a2f2f6d2e70696e64756f64756f2e6e65742f676f6f64732e68746d6c3f676f6f64735f69643d38373932383437303436383026706167655f736e3d3130303134008ba0330740f702bc06481a313136323231383431373036373234392d756e646566696e65645080c249585117974b617969797103786f4d6f7a696c6c612f352e3020284c696e75783b20416e64726f69642031303b204b29204170706c655765624b69742f3533372e333620284b48544d4c2c206c696b65204765636b6f29204368726f6d652f3134392e302e302e30204d6f62696c65205361666172692f3533372e3336802858706d4a6e30646f6e35544a5830456258435f735f697a646e42666f41666b4e5972657e4c695168882858706d4a6e30646f6e35544a5830456258435f735f697a646e42666f41666b4e5972657e4c695168901868747470733a2f2f6d2e70696e64756f64756f2e6e65742fa901b6019f7cdff8aad014d801e00000";
+
+    var dec = AntiContentCodec.DecodeToken(mockToken);
+    string inflHex = Convert.ToHexString(dec.Inflated).ToLowerInvariant();
+    Check("decode(mock).inflated == JS pre_deflate (跨语言逐字节)", inflHex == preHex, $"{dec.Inflated.Length}B");
+
+    // PackFields(解析出的字段) 重打包 == pre_deflate
+    string repackHex = Convert.ToHexString(AntiContentCodec.Frame(AntiContentCodec.PackFields(dec.Fields))).ToLowerInvariant();
+    Check("PackFields(fields) 帧 == pre_deflate (pack 层逐字节)", repackHex == preHex);
+
+    // ReEncode 往返: 解回字节一致
+    string re = AntiContentCodec.ReEncode(mockToken);
+    var dec2 = AntiContentCodec.DecodeToken(re);
+    Check("ReEncode 往返 inflated 一致", Convert.ToHexString(dec2.Inflated) == Convert.ToHexString(dec.Inflated));
+
+    // 字段值校验 (mock)
+    string? mockUa = dec.Fields.Find(f => f.Tag == 15)?.Str;
+    Check("mock tag15 UA 存在", mockUa != null && mockUa.Contains("Mozilla/5.0"));
+    Check("mock tag8 屏幕 375x828", dec.Fields.Find(f => f.Tag == 8) is { Va: { Count: 2 } v } && v[0] == 375 && v[1] == 828);
+
+    // 真机 token (examples/compare/render/real.txt) 解码
+    const string realToken =
+        "0asWfqnFpioyj9vxknP4PpgU1UWNI1v9oirccirc96Ojg-ny5T-Dv5r76mNgUdsd8KrputvVTBf0TMfUD3NV4PR2vfXUPxN4aVK-wVeFl3a1EnR3xr1zOI-vhv-7kW0KFUYZLPe4_MQdEMqB_sMZpZngUNEV5Pt6Yof84FqANquqXjMnkS_67C1SXikcI12_buBVKpREMV0vZzDtUTf10IynBZeynpd3ABV5Ds1rT_-j3CK31lHBjio6A304FPDvZ7A_KIOLViFpsws1z_wW8coiQS6MqcJxzCSc3udq8rOkaSJaz6qVKWZt8I42t1c6OREWN0eDHt82aeMv1wB6kZY6oI5ueaXTAgF7DB4fX-re6Bx4bay0A-Y3HzbP7KP4yV6jAmZbtZi6bwNxF4pU7CfGZ5qGlAfGtIm_dvV_qPMqhKMwO2gaTtzTARAh2MdUV21g0Um-Ors-Ov4xZoNmNSrvaaZ1FOggRfp0ycgBdcgj1Mlz2zUPMXMtEp5ghkAKRoItP8Wx-GongxQ-InyA2KSYH0oQvQY6MHJLyBHyWXUpoKSHdrmRWLlU5ZwnwzoQIx1-JCHC6kagtzSF3-xnUV8FYKCPMnDIJyKCqqdUi3tUYrcpjydE0Dr5NfD8zbSEd5AkcaXlbclShAsSPA3bEWcIGha833-hrMAHNPaLUwclRRLEyHCqcNH-zdL7NKv-UWFN9d";
+    var rdec = AntiContentCodec.DecodeToken(realToken);
+    Check("真机 token 解出 19 字段", rdec.Fields.Count == 19, rdec.Fields.Count.ToString());
+    Check("真机 tag19 pdd_user_id == 6398454719955", rdec.Fields.Find(f => f.Tag == 19)?.Str == "6398454719955");
+    Check("真机 tag15 UA 含 'android ' 前缀", (rdec.Fields.Find(f => f.Tag == 15)?.Str ?? "").StartsWith("android "));
+    Check("真机 tag26 浏览器位 == 0 (移动WebView)", rdec.Fields.Find(f => f.Tag == 26) is { Va: { Count: 1 } bv } && bv[0] == 0);
+    // 真机 ReEncode 往返
+    Check("真机 ReEncode 往返 inflated 一致",
+        Convert.ToHexString(AntiContentCodec.DecodeToken(AntiContentCodec.ReEncode(realToken)).Inflated) == Convert.ToHexString(rdec.Inflated));
+
+    // MintFromReal: 刷新时间戳, 保留持久值
+    long nowMs = 1799000000123;
+    string minted = AntiContentCodec.MintFromReal(realToken, nowMs);
+    var mdec = AntiContentCodec.DecodeToken(minted);
+    Check("MintFromReal tag22 时间戳已刷新", mdec.Fields.Find(f => f.Tag == 22)?.Num == nowMs);
+    Check("MintFromReal tag9 秒时间戳已刷新", (mdec.Fields.Find(f => f.Tag == 9)?.Str ?? "").EndsWith("-" + (nowMs / 1000)));
+    Check("MintFromReal 保留真机 pdd_user_id", mdec.Fields.Find(f => f.Tag == 19)?.Str == "6398454719955");
+    Check("MintFromReal 保留真机 nano_fp(tag16)", mdec.Fields.Find(f => f.Tag == 16)?.Str == rdec.Fields.Find(f => f.Tag == 16)?.Str);
+
+    // 确定字段对齐: 覆盖 UA(tag15) + 屏幕(tag8) + pdd_user_id(tag19)
+    const string mockUaOverride = "android Mozilla/5.0 (Linux; Android 14; MockModel Build/UP1A.999; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/143.0.7499.192 Safari/537.36  phh_android_version/8.8.0 pversion/0";
+    string minted2 = AntiContentCodec.MintFromReal(realToken, nowMs, pddUserId: "9999888877776", ua: mockUaOverride, screenAvailW: 393, screenAvailH: 851);
+    var m2 = AntiContentCodec.DecodeToken(minted2);
+    Check("对齐 tag15 UA == mock UA", m2.Fields.Find(f => f.Tag == 15)?.Str == mockUaOverride);
+    Check("对齐 tag8 屏幕 == 393x851", m2.Fields.Find(f => f.Tag == 8) is { Va: { Count: 2 } sv } && sv[0] == 393 && sv[1] == 851);
+    Check("对齐 tag19 pdd_user_id == 9999888877776", m2.Fields.Find(f => f.Tag == 19)?.Str == "9999888877776");
+    Check("对齐后保留真机 nano_fp(tag16)", m2.Fields.Find(f => f.Tag == 16)?.Str == rdec.Fields.Find(f => f.Tag == 16)?.Str);
+
+    // tag20 (api_uid) 对齐
+    const string mockApiUid = "CiYxB2pZfh59dwElGBfqAg==";
+    string minted3 = AntiContentCodec.MintFromReal(realToken, nowMs, apiUid: mockApiUid);
+    var m3 = AntiContentCodec.DecodeToken(minted3);
+    Check("对齐 tag20 api_uid == mock", m3.Fields.Find(f => f.Tag == 20)?.Str == mockApiUid);
+    Check("tag20 未传时保留真机值", AntiContentCodec.DecodeToken(AntiContentCodec.MintFromReal(realToken, nowMs)).Fields.Find(f => f.Tag == 20)?.Str == rdec.Fields.Find(f => f.Tag == 20)?.Str);
+
+    // tag23 (pdd_vds) 对齐
+    const string mockPddVds = "gaLUNJajOVLFIStkiUnVEVnUmkyXLRoXQjPUtKmJIXtAPUiVmJyHiVISQgOV";
+    var m4 = AntiContentCodec.DecodeToken(AntiContentCodec.MintFromReal(realToken, nowMs, pddVds: mockPddVds));
+    Check("对齐 tag23 pdd_vds == mock", m4.Fields.Find(f => f.Tag == 23)?.Str == mockPddVds);
+    Check("tag23 未传时保留真机值", AntiContentCodec.DecodeToken(AntiContentCodec.MintFromReal(realToken, nowMs)).Fields.Find(f => f.Tag == 23)?.Str == rdec.Fields.Find(f => f.Tag == 23)?.Str);
+
+    // nano_fp (tag16/17) 生成 + 对齐
+    string fp = AntiContentCodec.GenNanoFp();
+    Check("GenNanoFp 长度 40 + XpmJn0 前缀", fp.Length == 40 && fp.StartsWith("XpmJn0"), fp);
+    Check("GenNanoFp pos18 = '_' 分隔符", fp[18] == '_', fp);
+    Check("GenNanoFp 前18位无下划线", !fp.Substring(0, 18).Contains('_'));
+    Check("GenNanoFp 字符全在字母表", fp.All(c => AntiContentCodec.NanoFpAlphabet.Contains(c)));
+    Check("GenNanoFp 两次不同 (随机)", AntiContentCodec.GenNanoFp() != AntiContentCodec.GenNanoFp());
+    var m5 = AntiContentCodec.DecodeToken(AntiContentCodec.MintFromReal(realToken, nowMs, nanoFp: fp));
+    Check("对齐 tag16 nano_cookie_fp == fp", m5.Fields.Find(f => f.Tag == 16)?.Str == fp);
+    Check("对齐 tag17 nano_storage_fp == fp (同值)", m5.Fields.Find(f => f.Tag == 17)?.Str == fp);
+    Check("nanoFp 未传时保留真机值", AntiContentCodec.DecodeToken(AntiContentCodec.MintFromReal(realToken, nowMs)).Fields.Find(f => f.Tag == 16)?.Str == rdec.Fields.Find(f => f.Tag == 16)?.Str);
 }
 
 Console.WriteLine($"\n==== 汇总: PASS={pass}  FAIL={fail} ====");
